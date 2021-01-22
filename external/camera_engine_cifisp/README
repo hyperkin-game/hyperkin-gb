@@ -1,0 +1,39 @@
+1. 编译参考：
+1) 32位系统编译，可用下面命令，
+make ARCH=arm clean; make ARCH=arm
+2) 64位系统编译，可用下面命令，
+make ARCH=arm64 clean; make ARCH=arm64
+3) 编译工具链可能和默认的设置不同，根据需要修改productConfigs.mk文件中的CROSS_COMPILE；
+
+2. Kernel版本依赖：
+目前camera_engine_cifisp最新版本v2.0.9.0，需要
+1) rk-isp10驱动
+即drivers/media/platform/rk-isp10/cif_isp10_version.h记录的版本号需要在v0.2.2以上。
+2) sensor驱动
+sensor驱动需要和rk-isp10驱动相匹配。
+一般从服务器下载下来的sensor驱动和rk-isp10驱动是匹配的，
+如果是独立升级isp驱动，需要注意这一点。
+
+3. IQ配置文件
+一般是发IQ调试请求给rockchip生成。
+如果有调试IQ的能力，也可以申请IQ调试工具，然后自己调试生成。
+
+IQ目录下的xml文件适用于rv1108，rk3399/rk3288要使用的话，需要修改下面的gamma设置
+<gamma_y index="1" type="double" size="[1 17]">
+   [0 73 137 183 223 287 340 387 429 502 565 623 723 810 888 959 1023]
+</gamma_y>
+<wdron_gamma_y index="1" type="double" size="[1 17]">
+   [0 73 137 183 223 287 340 387 429 502 565 623 723 810 888 959 1023]
+</wdron_gamma_y>
+
+4. Demo参考
+本目录下的rkisp-demo可以参考。
+1) 请将cam_iq.xml拷贝到/etc/目录下(示例是用ov13850的IQ， 如果仅是验证硬件，不需要这个xml)
+2) 请将libcam_engine_cifisp.so及libcam_ia.so拷贝到/usr/lib/目录下(如果仅是验证硬件，不需要这个3A so)
+3) 编译xxx-g++ -o rkisp_demo rkisp_demo.cpp -ldl
+4) 使用例子
+rkisp_demo -d /dev/video0 -w 960 -h 540 --count 16 -f NV21 -o /tmp/rk3288_960_540_16.nv21
+
+5. 有关IQ Api调用
+调用IQ相关Api之前，需要确保IQ调试通过，IQ xml文件能正常加载。
+只有IQ部分运行正常，IQ Api调用才能起作用。

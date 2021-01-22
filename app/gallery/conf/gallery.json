@@ -1,0 +1,6 @@
+    {
+        "app_name": "gallery",
+        "app_icon": "icon_gallery.png",
+        "app_file": "galleryView",
+	"i18n":"i18n.ini"
+    }

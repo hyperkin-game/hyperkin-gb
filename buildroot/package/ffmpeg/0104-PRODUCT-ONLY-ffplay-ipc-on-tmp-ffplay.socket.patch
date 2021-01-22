@@ -1,0 +1,647 @@
+From 7e010e577645e5408a8d63da7da346dd98b7bddc Mon Sep 17 00:00:00 2001
+From: Hertz Wang <wangh@rock-chips.com>
+Date: Mon, 19 Nov 2018 17:05:14 +0800
+Subject: [PATCH 1/1] PRODUCT ONLY: ffplay: ipc on /tmp/ffplay.socket
+
+Signed-off-by: Hertz Wang <wangh@rock-chips.com>
+---
+ fftools/ffplay.c | 514 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 513 insertions(+), 1 deletion(-)
+
+diff --git a/fftools/ffplay.c b/fftools/ffplay.c
+index 6272c61..7ec1ded 100644
+--- a/fftools/ffplay.c
++++ b/fftools/ffplay.c
+@@ -310,6 +310,238 @@ typedef struct VideoState {
+     SDL_cond *continue_read_thread;
+ } VideoState;
+ 
++#define MESSAGE_MAX_LEN 512
++#define MESSAGE_SEPATATOR "="
++// state
++#define STATE       "state"
++
++#define READY       "ready"
++#define PLAYING     "playing"
++#define PAUSED      "paused"
++#define SEOF        "eof"
++#define END         "end"
++#define QUIT        "quit"
++#define ERROR       "error"
++
++#define MESSAGE_STATE_READY STATE MESSAGE_SEPATATOR READY
++
++// other message
++#define DURATION    "duration"
++#define CUR_TIME    "current time"
++
++// cmd
++#define QUERY           "query"
++#define SEEK_RELATIVE   "seek relative"
++#define SEEK_TO         "seek to"
++#define SET_STATE       "set state"
++
++typedef struct Message {
++    char *msg;
++    int len;
++    struct Message* next;
++} Message;
++
++typedef struct {
++    SDL_mutex *mutex;
++    SDL_cond *cond;
++    Message* first;
++} IPCMessageQueue;
++
++#define FFPLAY_IPC_SOCK_PATH "/tmp/ffplay.socket"
++
++typedef struct {
++    SDL_Thread *ipc_tid;
++    int quit;
++    int socket_fd;
++    VideoState *is;
++    IPCMessageQueue send_queue;
++    SDL_mutex *mutex;
++    char cur_state[64];
++} IPCState;
++
++static IPCState ipc_state;
++
++static Message* alloc_ipc_message(char *key, char *value) {
++    Message *ret;
++    int len = strlen(key) + strlen(value) + sizeof(MESSAGE_SEPATATOR);
++    char *str;
++
++    if (len > MESSAGE_MAX_LEN) {
++        av_log(NULL, AV_LOG_ERROR, "Message is too long\n");
++        return NULL;
++    }
++    str = av_malloc(len);
++    if (!str) {
++        av_log(NULL, AV_LOG_FATAL, "No Memory\n");
++        return NULL;
++    }
++    ret = av_malloc(sizeof(*ret));
++    if (!ret) {
++        av_free(str);
++        av_log(NULL, AV_LOG_FATAL, "No Memory\n");
++        return NULL;
++    }
++    snprintf(str, len, "%s%s%s", key, MESSAGE_SEPATATOR, value);
++    ret->msg = str;
++    ret->len = len;
++    ret->next = NULL;
++
++    return ret;
++}
++
++static void free_ipc_message(Message *m) {
++    if (!m)
++        return;
++    if (m->msg)
++        av_free(m->msg);
++    av_freep(&m);
++}
++
++static int init_ipc_queue(IPCMessageQueue *queue) {
++    queue->mutex = SDL_CreateMutex();
++    if (!queue->mutex) {
++        av_log(NULL, AV_LOG_FATAL, "SDL_CreateMutex(): %s\n", SDL_GetError());
++        return AVERROR(ENOMEM);
++    }
++    queue->cond = SDL_CreateCond();
++    if (!queue->cond) {
++        SDL_DestroyMutex(queue->mutex);
++        queue->mutex = NULL;
++        return AVERROR(ENOMEM);
++    }
++
++    return 0;
++}
++
++static void deinit_ipc_queue(IPCMessageQueue *queue) {
++    Message* m = queue->first;
++    while (m) {
++        av_freep(&m->msg);
++        m = m->next;
++        av_freep(&m);
++    }
++    if (queue->mutex) {
++        SDL_DestroyMutex(queue->mutex);
++        queue->mutex = NULL;
++    }
++    if (queue->cond) {
++        SDL_DestroyCond(queue->cond);
++        queue->cond = NULL;
++    }
++}
++
++static void push_ipc_message(IPCState *ipcs, Message* m) {
++    Message* end;
++    IPCMessageQueue *queue = &ipcs->send_queue;
++    SDL_LockMutex(queue->mutex);
++    end = queue->first;
++    while (end) {
++        if (!end->next) {
++            end->next = m;
++            m->next = NULL;
++            break;
++        }
++        end = end->next;
++    }
++    if (!end)
++        queue->first = m;
++    SDL_CondSignal(queue->cond);
++    SDL_UnlockMutex(queue->mutex);
++}
++
++static Message* pop_ipc_message(IPCState *ipcs) {
++    Message* first;
++    IPCMessageQueue *queue = &ipcs->send_queue;
++    SDL_LockMutex(queue->mutex);
++    first = queue->first;
++    if (!first)
++        SDL_CondWaitTimeout(queue->cond, queue->mutex, 100);
++    first = queue->first;
++    if (first) {
++        queue->first = first->next;
++        first->next = NULL;
++        SDL_UnlockMutex(queue->mutex);
++        return first;
++    }
++    SDL_UnlockMutex(queue->mutex);
++
++    return NULL;
++}
++
++static int push_ipc_state_message(IPCState *ipcs, const char* state) {
++    Message *m;
++    int ret;
++
++    SDL_LockMutex(ipcs->mutex);
++    ret = strcmp(ipcs->cur_state, state);
++    snprintf(ipcs->cur_state, sizeof(ipcs->cur_state), "%s", state);
++    SDL_UnlockMutex(ipcs->mutex);
++    if (!ret)
++        return 0;
++    m = alloc_ipc_message((char*)STATE, (char*)state);
++    if (!m)
++        return -1;
++
++    push_ipc_message(ipcs, m);
++    return 0;
++}
++
++static double get_master_pts(VideoState *is);
++static int push_ipc_curtime_message(IPCState *ipcs) {
++    Message *m;
++    char str[16];
++    VideoState* is = ipcs->is;
++    double pos = get_master_pts(is);
++    if (isnan(pos))
++        pos = (double)is->seek_pos / AV_TIME_BASE;
++
++    if (is->ic->start_time != AV_NOPTS_VALUE && pos < is->ic->start_time / (double)AV_TIME_BASE)
++        pos = is->ic->start_time / (double)AV_TIME_BASE;
++
++    snprintf(str, sizeof(str), "%f", pos);
++    m = alloc_ipc_message((char*)CUR_TIME, str);
++    if (!m)
++        return -1;
++    push_ipc_message(ipcs, m);
++    return 0;
++}
++
++static int ipc_main_thread(void *arg);
++static int init_ipc(IPCState *ipcs) {
++    int ret;
++    memset(ipcs, 0, sizeof(*ipcs));
++    ipcs->socket_fd = -1;
++    ipcs->mutex = SDL_CreateMutex();
++    if (!ipcs->mutex) {
++        av_log(NULL, AV_LOG_FATAL, "SDL_CreateMutex(): %s\n", SDL_GetError());
++        return AVERROR(ENOMEM);
++    }
++    ret = init_ipc_queue(&ipcs->send_queue);
++    if (ret) {
++        SDL_DestroyMutex(ipcs->mutex);
++        ipcs->mutex = NULL;
++        return ret;
++    }
++    ipcs->ipc_tid = SDL_CreateThread(ipc_main_thread, "ipc_main_thread", ipcs);
++    if (!ipcs->ipc_tid) {
++        deinit_ipc_queue(&ipcs->send_queue);
++        SDL_DestroyMutex(ipcs->mutex);
++        ipcs->mutex = NULL;
++        av_log(NULL, AV_LOG_FATAL, "SDL_CreateThread(): %s\n", SDL_GetError());
++        ret = -1;
++    }
++    return ret;
++}
++
++static void deinit_ipc(IPCState *ipcs) {
++    ipcs->quit = 1;
++    if (ipcs->ipc_tid)
++        SDL_WaitThread(ipcs->ipc_tid, NULL);
++    deinit_ipc_queue(&ipcs->send_queue);
++    SDL_DestroyMutex(ipcs->mutex);
++    ipcs->mutex = NULL;
++}
++
+ /* options specified by the user */
+ static AVInputFormat *file_iformat;
+ static const char *input_filename;
+@@ -815,6 +1047,15 @@ static int64_t frame_queue_last_pos(FrameQueue *f)
+         return -1;
+ }
+ 
++static double frame_queue_last_pts(FrameQueue *f)
++{
++    Frame *fp = &f->queue[f->rindex];
++    if (f->rindex_shown && fp->serial == f->pktq->serial)
++        return fp->pts;
++    else
++        return -1.0f;
++}
++
+ static void decoder_abort(Decoder *d, FrameQueue *fq)
+ {
+     packet_queue_abort(d->queue);
+@@ -1307,6 +1548,10 @@ static void stream_component_close(VideoState *is, int stream_index)
+ 
+ static void stream_close(VideoState *is)
+ {
++    if (is->ic &&
++        !(is->ic->pb && is->ic->pb->error))
++        push_ipc_state_message(&ipc_state, QUIT);
++
+     /* XXX: use a special url_shutdown call to abort parse cleanly */
+     is->abort_request = 1;
+     SDL_WaitThread(is->read_tid, NULL);
+@@ -1344,6 +1589,9 @@ static void stream_close(VideoState *is)
+ 
+ static void do_exit(VideoState *is)
+ {
++    if (!is) {
++        push_ipc_state_message(&ipc_state, ERROR);
++    }
+     if (is) {
+         stream_close(is);
+     }
+@@ -1360,12 +1608,15 @@ static void do_exit(VideoState *is)
+     if (show_status)
+         printf("\n");
+     SDL_Quit();
++    deinit_ipc(&ipc_state);
+     av_log(NULL, AV_LOG_QUIET, "%s", "");
+     exit(0);
+ }
+ 
+ static void sigterm_handler(int sig)
+ {
++    push_ipc_state_message(&ipc_state, ERROR);
++    deinit_ipc(&ipc_state);
+     exit(123);
+ }
+ 
+@@ -2992,6 +3243,9 @@ static int read_thread(void *arg)
+     if (infinite_buffer < 0 && is->realtime)
+         infinite_buffer = 1;
+ 
++    push_ipc_state_message(&ipc_state, READY);
++    ipc_state.is = is;
++
+     for (;;) {
+         if (is->abort_request)
+             break;
+@@ -3001,6 +3255,10 @@ static int read_thread(void *arg)
+                 is->read_pause_return = av_read_pause(ic);
+             else
+                 av_read_play(ic);
++            if (is->paused)
++                push_ipc_state_message(&ipc_state, PAUSED);
++            else
++                push_ipc_state_message(&ipc_state, PLAYING);
+         }
+ #if CONFIG_RTSP_DEMUXER || CONFIG_MMSH_PROTOCOL
+         if (is->paused &&
+@@ -3074,6 +3332,7 @@ static int read_thread(void *arg)
+         if (!is->paused &&
+             (!is->audio_st || (is->auddec.finished == is->audioq.serial && frame_queue_nb_remaining(&is->sampq) == 0)) &&
+             (!is->video_st || (is->viddec.finished == is->videoq.serial && frame_queue_nb_remaining(&is->pictq) == 0))) {
++            push_ipc_state_message(&ipc_state, END);
+             if (loop != 1 && (!loop || --loop)) {
+                 stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
+             } else if (autoexit) {
+@@ -3091,9 +3350,12 @@ static int read_thread(void *arg)
+                 if (is->subtitle_stream >= 0)
+                     packet_queue_put_nullpacket(&is->subtitleq, is->subtitle_stream);
+                 is->eof = 1;
++                push_ipc_state_message(&ipc_state, SEOF);
+             }
+-            if (ic->pb && ic->pb->error)
++            if (ic->pb && ic->pb->error) {
++                push_ipc_state_message(&ipc_state, ERROR);
+                 break;
++            }
+             SDL_LockMutex(wait_mutex);
+             SDL_CondWaitTimeout(is->continue_read_thread, wait_mutex, 10);
+             SDL_UnlockMutex(wait_mutex);
+@@ -3578,6 +3840,8 @@ static int opt_sync(void *optctx, const char *opt, const char *arg)
+         av_sync_type = AV_SYNC_EXTERNAL_CLOCK;
+     else {
+         av_log(NULL, AV_LOG_ERROR, "Unknown value for %s: %s\n", opt, arg);
++        push_ipc_state_message(&ipc_state, ERROR);
++        deinit_ipc(&ipc_state);
+         exit(1);
+     }
+     return 0;
+@@ -3610,6 +3874,8 @@ static void opt_input_file(void *optctx, const char *filename)
+         av_log(NULL, AV_LOG_FATAL,
+                "Argument '%s' provided as input filename, but '%s' was already specified.\n",
+                 filename, input_filename);
++        push_ipc_state_message(&ipc_state, ERROR);
++        deinit_ipc(&ipc_state);
+         exit(1);
+     }
+     if (!strcmp(filename, "-"))
+@@ -3755,6 +4021,237 @@ static int lockmgr(void **mtx, enum AVLockOp op)
+    return 1;
+ }
+ 
++#include <poll.h>
++#include <sys/un.h>
++#include <sys/socket.h>
++#include <unistd.h>
++
++double get_master_pts(VideoState* is) {
++    double pts;
++
++    switch (get_master_sync_type(is)) {
++        case AV_SYNC_VIDEO_MASTER:
++            pts = frame_queue_last_pts(&is->pictq);
++            break;
++        case AV_SYNC_AUDIO_MASTER:
++            pts = frame_queue_last_pts(&is->sampq);
++            break;
++        default:
++            if (is->video_stream >= 0)
++                pts = frame_queue_last_pts(&is->pictq);
++            if (pts < 0 && is->audio_stream >= 0)
++                pts = frame_queue_last_pts(&is->sampq);
++            break;
++    }
++    return pts;
++}
++
++static void handle_remote_ipc_message(IPCState *ipcs, char *key, char *value) {
++    VideoState* is = ipcs->is;
++    Message *response_msg = NULL;
++
++    if (!strcmp(key, QUERY)) {
++        if (!strcmp(value, STATE)) {
++            SDL_LockMutex(ipcs->mutex);
++            response_msg = alloc_ipc_message((char*)STATE, ipcs->cur_state);
++            SDL_UnlockMutex(ipcs->mutex);
++        } else if (!strcmp(value, DURATION)) {
++            char str[16];
++            AVFormatContext* ic = is->ic;
++            if (ic->duration != AV_NOPTS_VALUE) {
++                int64_t duration = ic->duration +
++                    (ic->duration <= INT64_MAX - 5000 ? 5000 : 0);
++                int secs = duration / AV_TIME_BASE;
++                snprintf(str, sizeof(str), "%d", secs);
++            } else {
++                snprintf(str, sizeof(str), "-1");
++            }
++            response_msg = alloc_ipc_message((char*)DURATION, str);
++        } else if (!strcmp(value, CUR_TIME)) {
++            push_ipc_curtime_message(ipcs);
++        }
++        goto response;
++    }
++
++    if (!strcmp(key, SET_STATE)) {
++        if (!strcmp(value, PAUSED)) {
++            if (!is->paused)
++                toggle_pause(is);
++        } if (!strcmp(value, PLAYING)) {
++            if (is->paused)
++                toggle_pause(is);
++        } if (!strcmp(value, QUIT)) {
++            SDL_Event event;
++            event.type = FF_QUIT_EVENT;
++            event.user.data1 = is;
++            SDL_PushEvent(&event);
++        }
++        goto response;
++    }
++
++    if (!strcmp(key, SEEK_RELATIVE)) {
++        int time_step = atoi(value);
++        if (seek_by_bytes) {
++            int64_t pos = -1;
++            if (is->video_stream >= 0)
++                pos = frame_queue_last_pos(&is->pictq);
++            if (pos < 0 && is->audio_stream >= 0)
++                pos = frame_queue_last_pos(&is->sampq);
++            if (pos < 0)
++                pos = avio_tell(is->ic->pb);
++            if (is->ic->bit_rate)
++                time_step *= is->ic->bit_rate / 8.0;
++            else
++                time_step *= 180000.0;
++            pos += time_step;
++            stream_seek(is, pos, time_step, 1);
++        } else {
++            double pos = get_master_pts(is);
++            if (isnan(pos))
++                pos = (double)is->seek_pos / AV_TIME_BASE;
++            pos += time_step;
++            if (is->ic->start_time != AV_NOPTS_VALUE &&
++                pos < is->ic->start_time / (double)AV_TIME_BASE)
++                pos = is->ic->start_time / (double)AV_TIME_BASE;
++            stream_seek(is, (int64_t)(pos * AV_TIME_BASE),
++                        (int64_t)(0.1f * AV_TIME_BASE), 0);
++        }
++        goto response;
++    }
++
++    if (!strcmp(key, SEEK_TO)) {
++        int pos = atoi(value);
++        if (is->ic->start_time != AV_NOPTS_VALUE &&
++                pos < is->ic->start_time / (double)AV_TIME_BASE)
++                pos = is->ic->start_time / (double)AV_TIME_BASE;
++        stream_seek(is, (int64_t)(pos * AV_TIME_BASE), 0,
++                    (seek_by_bytes || is->ic->duration <= 0) ? 1 : 0);
++        goto response;
++    }
++
++
++response:
++    if (response_msg)
++        push_ipc_message(ipcs, response_msg);
++}
++
++static int ipc_recv_thread(void *arg) {
++    char buf[MESSAGE_MAX_LEN];
++    IPCState *ipcs = (IPCState *)arg;
++    int fd = ipcs->socket_fd;
++
++    while (!ipcs->quit) {
++        char *str;
++        int recv_len;
++
++        struct pollfd fds;
++        int p_ret;
++
++        fds.fd = fd;
++        fds.events = POLLIN | POLLERR;
++        fds.revents = 0;
++
++        p_ret = poll(&fds, 1, 100);
++        if (p_ret < 0 || !(fds.revents & POLLIN))
++            continue;
++
++        recv_len = recv(fd, buf, sizeof(buf), 0);
++        if (recv_len <= 0) {
++            av_log(NULL, AV_LOG_WARNING, "Fail to recv message: %s\n",
++                   strerror(errno));
++            continue;
++        }
++
++        str = strstr(buf, MESSAGE_SEPATATOR);
++        if (buf[recv_len - 1] != 0 || !str) {
++            av_log(NULL, AV_LOG_ERROR, "Remote Message is broken <%s>?\n",
++                   buf);
++            continue;
++        }
++        *str = 0;
++        handle_remote_ipc_message(ipcs, buf, str + 1);
++    }
++
++    return 0;
++}
++
++static int ipc_main_thread(void *arg) {
++    int ret = 0;
++    IPCState *ipcs = (IPCState *)arg;
++    int fd = -1;
++    struct sockaddr_un address;
++    static SDL_Thread *recv_tid = NULL;
++    int64_t pretime = 0;
++
++    fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
++    if (fd < 0) {
++        av_log(NULL, AV_LOG_FATAL, "Fail to create socket: %s\n", strerror(errno));
++        ret = -1;
++        goto out;
++    }
++
++    memset(&address, 0, sizeof(address));
++    address.sun_family = AF_UNIX;
++    strcpy(address.sun_path, FFPLAY_IPC_SOCK_PATH);
++    ret = connect(fd, (struct sockaddr *)&address, sizeof(address));
++    if (ret < 0) {
++        av_log(NULL, AV_LOG_FATAL, "Fail to connect socket: %s\n", strerror(errno));
++        goto out;
++    }
++    ipcs->socket_fd = fd;
++
++    while (1) {
++        int send_len;
++        int64_t now = av_gettime_relative();
++        Message *m = pop_ipc_message(ipcs);
++
++        if (pretime > 0 && now - pretime > 500000) {
++            push_ipc_curtime_message(ipcs);
++            pretime = now;
++        }
++
++        if (!m) {
++            if (ipcs->quit)
++                break;
++            continue;
++        }
++        send_len = m->len;
++        if (!recv_tid && send_len > 0 && !strcmp(m->msg, MESSAGE_STATE_READY)) {
++            // Handle remote message after av is ready.
++            recv_tid = SDL_CreateThread(ipc_recv_thread, "ipc_recv_thread", arg);
++            if (!recv_tid) {
++                av_log(NULL, AV_LOG_FATAL, "SDL_CreateThread(): %s\n",
++                       SDL_GetError());
++                ret = -1;
++                free_ipc_message(m);
++                goto out;
++            }
++            pretime = av_gettime_relative();
++        }
++        while (send_len > 0) {
++            ret = send(fd, m->msg, m->len, 0);
++            if (ret < 0) {
++                av_log(NULL, AV_LOG_ERROR, "Fail to send msg<%s>: %s\n",
++                       m->msg, strerror(errno));
++                break;
++            }
++            send_len -= ret;
++        }
++        free_ipc_message(m);
++    }
++
++out:
++    if (fd > 0) {
++        close(fd);
++        ipcs->socket_fd = -1;
++    }
++    if (recv_tid) {
++        SDL_WaitThread(recv_tid, NULL);
++    }
++
++    return ret;
++}
++
+ /* Called from the main */
+ int main(int argc, char **argv)
+ {
+@@ -3766,6 +4263,11 @@ int main(int argc, char **argv)
+     av_log_set_flags(AV_LOG_SKIP_REPEATED);
+     parse_loglevel(argc, argv, options);
+ 
++    if (init_ipc(&ipc_state)) {
++        av_log(NULL, AV_LOG_FATAL, "Could not initialize ipc!\n");
++        exit(1);
++    }
++
+     /* register all codecs, demux and protocols */
+ #if CONFIG_AVDEVICE
+     avdevice_register_all();
+@@ -3792,6 +4294,8 @@ int main(int argc, char **argv)
+         av_log(NULL, AV_LOG_FATAL, "An input file must be specified\n");
+         av_log(NULL, AV_LOG_FATAL,
+                "Use -h to get full help or, even better, run 'man %s'\n", program_name);
++        push_ipc_state_message(&ipc_state, ERROR);
++        deinit_ipc(&ipc_state);
+         exit(1);
+     }
+ 
+@@ -3812,9 +4316,17 @@ int main(int argc, char **argv)
+     if (SDL_Init (flags)) {
+         av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
+         av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
++        push_ipc_state_message(&ipc_state, ERROR);
++        deinit_ipc(&ipc_state);
+         exit(1);
+     }
+ 
++    SDL_EventState(SDL_KEYDOWN, SDL_IGNORE);
++    SDL_EventState(SDL_KEYUP, SDL_IGNORE);
++    SDL_EventState(SDL_MOUSEMOTION, SDL_IGNORE);
++    SDL_EventState(SDL_MOUSEBUTTONDOWN, SDL_IGNORE);
++    SDL_EventState(SDL_MOUSEBUTTONUP, SDL_IGNORE);
++
+     SDL_EventState(SDL_SYSWMEVENT, SDL_IGNORE);
+     SDL_EventState(SDL_USEREVENT, SDL_IGNORE);
+ 
+-- 
+2.7.4
+

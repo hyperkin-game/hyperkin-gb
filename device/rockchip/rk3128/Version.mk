@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# MODEL NAME
+export RK_MODEL=RK3128_RETROGAME
+# SOFT VERSION
+export RK_VERSION=V1.0.0

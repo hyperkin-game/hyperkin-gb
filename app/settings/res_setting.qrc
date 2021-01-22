@@ -1,0 +1,35 @@
+<RCC>
+    <qresource prefix="/">
+        <file>image/setting/setting_icon.png</file>
+        <file>image/setting/bt_normal.png</file>
+        <file>image/setting/bt_seleted.png</file>
+        <file>image/setting/common_normal.png</file>
+        <file>image/setting/system_normal.png</file>
+        <file>image/setting/system_seleted.png</file>
+        <file>image/setting/wifi_normal.png</file>
+        <file>image/setting/wifi_seleted.png</file>
+        <file>image/setting/common_seleted.png</file>
+        <file>image/setting/ic_wifi_locked.png</file>
+        <file>image/setting/ic_wifi_signal_1_dark.png</file>
+        <file>image/setting/ic_wifi_signal_2_dark.png</file>
+        <file>image/setting/ic_wifi_signal_3_dark.png</file>
+        <file>image/setting/ic_wifi_signal_4_dark.png</file>
+        <file>image/setting/ic_wifi_unlocked.png</file>
+        <file>image/setting/bightness-down.png</file>
+        <file>image/setting/bightness-up.png</file>
+        <file>image/setting/clock.png</file>
+        <file>image/setting/volume-down.png</file>
+        <file>image/setting/volume-up.png</file>
+        <file>image/setting/brightness.png</file>
+        <file>image/setting/calendar.png</file>
+        <file>image/setting/speaker.png</file>
+        <file>image/setting/update.png</file>
+        <file>image/setting/slider.png</file>
+        <file>image/setting/bluetooth_item_icon.png</file>
+        <file>image/setting/bluetooth_scan.png</file>
+        <file>image/setting/language.png</file>
+        <file>image/setting/hotspot.png</file>
+        <file>image/setting/return.png</file>
+        <file>image/setting/return_big.png</file>
+    </qresource>
+</RCC>

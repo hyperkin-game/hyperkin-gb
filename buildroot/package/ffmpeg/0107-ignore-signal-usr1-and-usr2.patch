@@ -1,0 +1,26 @@
+From 78138bd50958adb86ffac7eb30c9d0ba30e0b4a5 Mon Sep 17 00:00:00 2001
+From: Hans Yang <yhx@rock-chips.com>
+Date: Fri, 14 Dec 2018 18:37:44 +0800
+Subject: [PATCH 1/1] ignore signal usr1 and usr2
+
+Signed-off-by: Hans Yang <yhx@rock-chips.com>
+---
+ fftools/ffplay.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/fftools/ffplay.c b/fftools/ffplay.c
+index 95a2109..4ccc7b5 100644
+--- a/fftools/ffplay.c
++++ b/fftools/ffplay.c
+@@ -4283,6 +4283,8 @@ int main(int argc, char **argv)
+ 
+     signal(SIGINT , sigterm_handler); /* Interrupt (ANSI).    */
+     signal(SIGTERM, sigterm_handler); /* Termination (ANSI).  */
++    signal(SIGUSR1, SIG_IGN);
++    signal(SIGUSR2, SIG_IGN);
+ 
+     show_banner(argc, argv, options);
+ 
+-- 
+2.7.4
+

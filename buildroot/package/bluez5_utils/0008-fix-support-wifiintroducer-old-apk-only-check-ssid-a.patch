@@ -1,0 +1,46 @@
+From 162cb873ff6f2cf4d12b9044a0485dbc926b5ead Mon Sep 17 00:00:00 2001
+From: Yu YongZhen <yuyz@rock-chips.com>
+Date: Mon, 15 Oct 2018 10:05:48 +0800
+Subject: [PATCH] fix support wifiintroducer old apk, only check ssid and psk.
+
+below params fixed,
+wifi_security:WPA-PSK
+wifi_hide:0
+---
+ tools/gatt-service.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/tools/gatt-service.c b/tools/gatt-service.c
+index 5701399..cb24282 100644
+--- a/tools/gatt-service.c
++++ b/tools/gatt-service.c
+@@ -1019,6 +1019,7 @@ static DBusMessage *chr_write_value(DBusConnection *conn, DBusMessage *msg,
+         if (!strcmp(PASSWORD_CHAR_UUID, chr->uuid)){
+                 strcpy(wifi_password, chr->value);
+         	printf("wifi pwd is  %s\n", wifi_password);
++		wifi_config_thread_create();
+ 	}
+ 	if (!strcmp(HIDE_CHAR_UUID, chr->uuid)){
+                 strcpy(wifi_hide, chr->value);
+@@ -1037,7 +1038,7 @@ static DBusMessage *chr_write_value(DBusConnection *conn, DBusMessage *msg,
+         	wpa_cli_config_wifi();
+         	save_wifi_config(wifi_ssid, wifi_password);
+         	#else
+-        	wifi_config_thread_create(); 
++        	//wifi_config_thread_create(); 
+         	#endif
+     	}
+ #endif
+@@ -1509,6 +1510,9 @@ int main(int argc, char *argv[])
+ 	g_dbus_client_set_proxy_handlers(client, proxy_added_cb, NULL, NULL,
+ 									NULL);
+ 
++	strcpy(wifi_security, "WPA-PSK");
++	strcpy(wifi_hide, "0");
++
+ 	g_main_loop_run(main_loop);
+ 
+ #ifdef DUEROS
+-- 
+2.7.4
+

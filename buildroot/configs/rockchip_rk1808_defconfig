@@ -1,0 +1,14 @@
+#include "rk1808_arm64.config"
+#include "base.config"
+#include "base_extra.config"
+#include "debug.config"
+#include "audio.config"
+#include "wifi.config"
+#include "bt.config"
+BR2_PACKAGE_RKWIFIBT_COMPATIBLE=y
+BR2_TARGET_GENERIC_HOSTNAME="rk1808"
+BR2_TARGET_GENERIC_ISSUE="Welcome to RK1808 Buildroot"
+BR2_PACKAGE_MINIGUI=y
+BR2_PACKAGE_LIBDRM=y
+BR2_PACKAGE_ROCKCHIP_TEST=y
+BR2_PACKAGE_RKNPU=y

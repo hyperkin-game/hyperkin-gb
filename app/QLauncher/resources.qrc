@@ -1,0 +1,18 @@
+<RCC>
+    <qresource prefix="/qml">
+        <file>qml/main.qml</file>
+        <file>qml/config/qmldir</file>
+        <file>qml/config/Theme.qml</file>
+        <file>qml/debug/Debug.qml</file>
+        <file>qml/debug/qmldir</file>
+        <file>qml/theme/ApplicationTile.qml</file>
+        <file>qml/theme/ThemeLandscape.qml</file>
+        <file>qml/theme/ThemePortrait.qml</file>
+        <file>qml/app_loading.qml</file>
+        <file>qml/BusyIndicator.qml</file>
+    </qresource>
+    <qresource prefix="/images">
+        <file alias="background">resources/images/background.jpg</file>
+        <file alias="icon">resources/images/icon.png</file>
+    </qresource>
+</RCC>

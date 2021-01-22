@@ -1,0 +1,227 @@
+From eca0024353ffb072196010a3e32daa4f45611c85 Mon Sep 17 00:00:00 2001
+From: Binyuan Lan <lby@rock-chips.com>
+Date: Thu, 20 Jul 2017 23:03:04 +0800
+Subject: [PATCH] kmssink: add render_rectangle and show fps for qt
+
+Signed-off-by: Binyuan Lan <lby@rock-chips.com>
+---
+ sys/kms/gstkmsallocator.c |   2 +
+ sys/kms/gstkmssink.c      | 106 ++++++++++++++++++++++++++++++++++++++++++++--
+ sys/kms/gstkmssink.h      |   1 +
+ sys/kms/gstkmsutils.c     |   1 +
+ 4 files changed, 106 insertions(+), 4 deletions(-)
+
+diff --git a/sys/kms/gstkmsallocator.c b/sys/kms/gstkmsallocator.c
+index 648ac2f..4975e1f 100644
+--- a/sys/kms/gstkmsallocator.c
++++ b/sys/kms/gstkmsallocator.c
+@@ -396,6 +396,10 @@ gst_kms_allocator_add_fb (GstKMSAllocator * alloc, GstKMSMemory * kmsmem,
+     pitches[i] = GST_VIDEO_INFO_PLANE_STRIDE (vinfo, i);
+     GST_DEBUG_OBJECT (alloc, "Create FB plane %i with stride %u and offset %u",
+         i, pitches[i], offsets[i]);
++	if ((GST_VIDEO_INFO_FORMAT(vinfo) == GST_VIDEO_FORMAT_P010_10LE) && (w >= 3840)) {
++		pitches[i] *= 2;
++		h = GST_VIDEO_INFO_HEIGHT (vinfo) / 2;
++	}
+   }
+ 
+   ret = drmModeAddFB2 (alloc->priv->fd, w, h, fmt, bo_handles, pitches,
+diff --git a/sys/kms/gstkmssink.c b/sys/kms/gstkmssink.c
+index d19e19e..d73cddd 100644
+--- a/sys/kms/gstkmssink.c
++++ b/sys/kms/gstkmssink.c
+@@ -60,15 +60,30 @@
+ #define GST_PLUGIN_NAME "kmssink"
+ #define GST_PLUGIN_DESC "Video sink using the Linux kernel mode setting API"
+ 
++#define DEBUG_FPS
++
+ GST_DEBUG_CATEGORY_STATIC (gst_kms_sink_debug);
+ GST_DEBUG_CATEGORY_STATIC (CAT_PERFORMANCE);
++static void gst_kms_sink_video_overlay_init (GstVideoOverlayInterface *iface);
++static void gst_kms_sink_navigation_init (GstNavigationInterface * iface);
++
++#ifdef DEBUG_FPS
++static guint32 g_frame_showed = 0;
++static GstClockTime g_start_time;
++#endif
++
+ #define GST_CAT_DEFAULT gst_kms_sink_debug
+ 
+-#define parent_class gst_kms_sink_parent_class
++#define gst_kms_sink_parent_class parent_class
+ G_DEFINE_TYPE_WITH_CODE (GstKMSSink, gst_kms_sink, GST_TYPE_VIDEO_SINK,
+     GST_DEBUG_CATEGORY_INIT (GST_CAT_DEFAULT, GST_PLUGIN_NAME, 0,
+         GST_PLUGIN_DESC);
+-    GST_DEBUG_CATEGORY_GET (CAT_PERFORMANCE, "GST_PERFORMANCE"));
++    GST_DEBUG_CATEGORY_GET (CAT_PERFORMANCE, "GST_PERFORMANCE");
++	G_IMPLEMENT_INTERFACE (GST_TYPE_NAVIGATION,
++        gst_kms_sink_navigation_init);
++	G_IMPLEMENT_INTERFACE (GST_TYPE_VIDEO_OVERLAY,
++		gst_kms_sink_video_overlay_init);
++	);
+ 
+ enum
+ {
+@@ -506,10 +521,11 @@ gst_kms_sink_start (GstBaseSink * bsink)
+   pres = NULL;
+   plane = NULL;
+ 
+-  if (self->devname)
++  /*if (self->devname)
+     self->fd = drmOpen (self->devname, NULL);
+   else
+-    self->fd = kms_open (&self->devname);
++    self->fd = kms_open (self,&self->devname);*/
++  self->fd = open ("/dev/dri/card0", 0x0002); //O_RDWR
+   if (self->fd < 0)
+     goto open_failed;
+ 
+@@ -1214,10 +1230,57 @@ error_map_src_buffer:
+   }
+ }
+ 
++static void
++kms_get_render_rectangle (GstKMSSink *kmssink, gint * x,
++	gint * y, gint * width, gint * height)
++{
++  if (kmssink->save_rect.w != 0 && kmssink->save_rect.h != 0) {
++    *width = kmssink->save_rect.w;
++    *height = kmssink->save_rect.h;
++    *x = kmssink->save_rect.x;
++    *y = kmssink->save_rect.y;
++  }
++}
++
++static void
++gst_kms_sink_set_render_rectangle (GstVideoOverlay * overlay,
++    gint x, gint y, gint width, gint height)
++{
++  GstKMSSink *kmssink = GST_KMS_SINK (overlay);
++
++  if (x >= 0 && y >= 0 && width > 0 && height > 0) {
++	kmssink->save_rect.w = width;
++	kmssink->save_rect.h = height;
++	kmssink->save_rect.x = x;
++	kmssink->save_rect.y = y;
++  }
++}
++
++static void
++gst_kms_sink_navigation_send_event (GstNavigation * navigation,
++    GstStructure * structure)
++{
++
++}
++
++static void
++gst_kms_sink_video_overlay_init (GstVideoOverlayInterface * iface)
++{
++  iface->set_render_rectangle = gst_kms_sink_set_render_rectangle;
++}
++
++static void
++gst_kms_sink_navigation_init (GstNavigationInterface * iface)
++{
++  iface->send_event = gst_kms_sink_navigation_send_event;
++}
++
+ static GstFlowReturn
+ gst_kms_sink_show_frame (GstVideoSink * vsink, GstBuffer * buf)
+ {
+   gint ret;
++  gdouble average_fps;
++  gdouble time_elapsed;
+   GstBuffer *buffer;
+   guint32 fb_id;
+   GstKMSSink *self;
+@@ -1231,6 +1294,11 @@ gst_kms_sink_show_frame (GstVideoSink * vsink, GstBuffer * buf)
+ 
+   res = GST_FLOW_ERROR;
+ 
++#ifdef DEBUG_FPS
++  if (g_frame_showed == 0)
++	g_start_time = gst_util_get_timestamp ();
++#endif
++
+   buffer = gst_kms_sink_get_input_buffer (self, buf);
+   if (!buffer)
+     return GST_FLOW_ERROR;
+@@ -1274,6 +1342,19 @@ retry_set_plane:
+     src.h = GST_VIDEO_INFO_HEIGHT (&self->vinfo);
+   }
+ 
++  kms_get_render_rectangle (self, &result.x, &result.y, &result.w,
++      &result.h);
++
++  gst_video_sink_center_rect (src, result, &result, self->can_scale);
++
++  if ((GST_VIDEO_INFO_FORMAT(&self->vinfo) == GST_VIDEO_FORMAT_P010_10LE) && (src.w >= 3840))
++	  src.h /=2;
++  /*if((GST_VIDEO_INFO_FORMAT(&self->vinfo) == GST_VIDEO_FORMAT_P010_10LE) && (result.h <= 1200))
++	{
++		result.y = result.y - (1200 - result.h)/2;
++		result.h = 1200;
++	}*/ //why?
++
+   GST_TRACE_OBJECT (self,
+       "drmModeSetPlane at (%i,%i) %ix%i sourcing at (%i,%i) %ix%i",
+       result.x, result.y, result.w, result.h, src.x, src.y, src.w, src.h);
+@@ -1300,6 +1381,18 @@ sync_frame:
+ 
+   res = GST_FLOW_OK;
+ 
++#ifdef DEBUG_FPS
++  if (++g_frame_showed == 60) {
++	GstClockTime g_end_time = gst_util_get_timestamp ();
++	time_elapsed = (gdouble) (g_end_time - g_start_time) / GST_SECOND;
++	average_fps = (gdouble) g_frame_showed / time_elapsed;
++
++	GST_INFO_OBJECT (self,
++      "============> kmssink fps=%f\n", average_fps);
++	g_frame_showed = 0;
++  }
++#endif
++
+ bail:
+   gst_buffer_unref (buffer);
+   return res;
+@@ -1403,6 +1496,11 @@ gst_kms_sink_init (GstKMSSink * sink)
+   gst_poll_fd_init (&sink->pollfd);
+   sink->poll = gst_poll_new (TRUE);
+   gst_video_info_init (&sink->vinfo);
++
++  sink->save_rect.x = 0;
++  sink->save_rect.y = 0;
++  sink->save_rect.w = 0;
++  sink->save_rect.h = 0;
+ }
+ 
+ static void
+diff --git a/sys/kms/gstkmssink.h b/sys/kms/gstkmssink.h
+index 214f3ad..b79f462 100644
+--- a/sys/kms/gstkmssink.h
++++ b/sys/kms/gstkmssink.h
+@@ -78,6 +78,7 @@ struct _GstKMSSink {
+ 
+   GstPoll *poll;
+   GstPollFD pollfd;
++  GstVideoRectangle save_rect;
+ };
+ 
+ struct _GstKMSSinkClass {
+diff --git a/sys/kms/gstkmsutils.c b/sys/kms/gstkmsutils.c
+index 838cddd..72e4b4b 100644
+--- a/sys/kms/gstkmsutils.c
++++ b/sys/kms/gstkmsutils.c
+@@ -47,6 +47,7 @@ static const struct
+   DEF_FMT (XRGB8888, BGRx),
+   DEF_FMT (ABGR8888, RGBA),
+   DEF_FMT (XBGR8888, RGBx),
++  DEF_FMT (NV12_10, P010_10LE),
+ #else
+   DEF_FMT (ARGB8888, ARGB),
+   DEF_FMT (XRGB8888, xRGB),
+-- 
+1.9.1
+

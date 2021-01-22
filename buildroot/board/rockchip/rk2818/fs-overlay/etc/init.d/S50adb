@@ -1,0 +1,25 @@
+#!/bin/sh
+#
+# Start adb daemon service....
+#
+
+case "$1" in
+	start)
+	echo 0 > /sys/class/android_usb/android0/enable
+	echo 2207 > /sys/class/android_usb/android0/idVendor
+	echo 0010 > /sys/class/android_usb/android0/idProduct
+	echo mass_storage,adb > /sys/class/android_usb/android0/functions
+	echo 1 > /sys/class/android_usb/android0/enable
+	adbd &
+	;;
+	stop)
+	echo "none" > /sys/kernel/config/usb_gadget/g1/UDC
+	;;
+	restart|reload)
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+esac
+
+exit $?

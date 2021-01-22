@@ -1,0 +1,28 @@
+<RCC>
+    <qresource prefix="/">
+        <file>image/gallery/gallery_top_icon.png</file>
+        <file>image/gallery/ic_empty_image.png</file>
+        <file>image/gallery/ic_thumb_checked.png</file>
+        <file>image/gallery/ic_delete_hover.png</file>
+        <file>image/gallery/ic_delete_normal.png</file>
+        <file>image/gallery/ic_delete_pressed.png</file>
+        <file>image/gallery/ic_detail_hover.png</file>
+        <file>image/gallery/ic_detail_normal.png</file>
+        <file>image/gallery/ic_detail_pressed.png</file>
+        <file>image/gallery/ic_last_hover.png</file>
+        <file>image/gallery/ic_last_normal.png</file>
+        <file>image/gallery/ic_last_pressed.png</file>
+        <file>image/gallery/ic_next_hover.png</file>
+        <file>image/gallery/ic_next_normal.png</file>
+        <file>image/gallery/ic_next_pressed.png</file>
+        <file>image/gallery/ic_rotate_hover.png</file>
+        <file>image/gallery/ic_rotate_normal.png</file>
+        <file>image/gallery/ic_rotate_pressed.png</file>
+        <file>image/gallery/ic_zoomin_hover.png</file>
+        <file>image/gallery/ic_zoomin_normal.png</file>
+        <file>image/gallery/ic_zoomin_pressed.png</file>
+        <file>image/gallery/ic_zoomout_hover.png</file>
+        <file>image/gallery/ic_zoomout_normal.png</file>
+        <file>image/gallery/ic_zoomout_pressed.png</file>
+    </qresource>
+</RCC>

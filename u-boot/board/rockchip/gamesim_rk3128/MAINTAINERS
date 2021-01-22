@@ -1,0 +1,6 @@
+GAMESIM-RK3128
+M:      Ziyuan <xzy.xu@rock-chips.com>
+S:      Maintained
+F:      board/rockchip/gamesim_rk3128
+F:      include/configs/gamesim_rk3128.h
+F:      configs/gamesim-rk3128_defconfig

@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--  Thermal Management Configuration File -->
+<!--  Intel Corporation 2011-2014  -->
+<thermalthrottleconfig>
+  <!-- Config xml file version should be in sync with iTUX version number-->
+  <ConfigFileVersion>1.0</ConfigFileVersion>
+
+  <!--Platform Parameters-->
+  <PlatformInfo>
+      <!--PlatformName reference. In future will be compared against ro.board.platform-->
+      <PlatformName>PX3SE</PlatformName>
+      <!--standard cooling devices register in /sys/class/thermal/cooling_deviceX/ Herein
+      referred as 'Path Enumerated at Runtime by Framework in Kernel Thermal' or PERFKT-->
+  </PlatformInfo>
+
+  <!--Cooling Devices-->
+  <ContributingDeviceInfo>
+    <CDeviceName>CPU</CDeviceName>
+    <CDeviceID>1</CDeviceID>
+    <CDeviceClassPath>CPUMaxFreqControl</CDeviceClassPath>
+    <CDeviceThrottlePath>auto</CDeviceThrottlePath>
+  </ContributingDeviceInfo>
+
+  <!--
+  <ContributingDeviceInfo>
+    <CDeviceName>charger</CDeviceName>
+    <CDeviceID>2</CDeviceID>
+    <CDeviceClassPath>com.intel.thermal.BatteryChargeCurrentControl</CDeviceClassPath>
+    <CDeviceThrottlePath>auto</CDeviceThrottlePath>
+    <ThrottleValues>
+      <ThrottleNormal>1200</ThrottleNormal>
+      <ThrottleWarning>900</ThrottleWarning>
+      <ThrottleAlert>500</ThrottleAlert>
+      <ThrottleCritical>500</ThrottleCritical>
+    </ThrottleValues>
+  </ContributingDeviceInfo>
+  -->
+
+  <ContributingDeviceInfo>
+    <CDeviceName>Display</CDeviceName>
+    <CDeviceID>3</CDeviceID>
+    <CDeviceClassPath>com.rockchip.thermal.BrightnessControl</CDeviceClassPath>
+    <ThrottleValues>
+      <ThrottleNormal>100</ThrottleNormal>
+      <ThrottleWarning>80</ThrottleWarning>
+      <ThrottleAlert>60</ThrottleAlert>
+      <ThrottleCritical>40</ThrottleCritical>
+    </ThrottleValues>
+  </ContributingDeviceInfo>
+
+  <!--
+  <ContributingDeviceInfo>
+    <CDeviceName>GPU</CDeviceName>
+    <CDeviceID>4</CDeviceID>
+    <CDeviceClassPath>com.intel.thermal.GPUMaxFreqControl</CDeviceClassPath>
+    <CDeviceThrottlePath>/sys/devices/soc0/e0000000.noc/ef010000.l2_noc/e2000000.ahb_per/e2e00000.gpu/pm_max_state</CDeviceThrottlePath>
+    <ThrottleValues>
+      <ThrottleNormal>4</ThrottleNormal>
+      <ThrottleWarning>3</ThrottleWarning>
+      <ThrottleAlert>2</ThrottleAlert>
+      <ThrottleCritical>1</ThrottleCritical>
+      <ThrottleCriticalFinal>1</ThrottleCriticalFinal>
+    </ThrottleValues>
+  </ContributingDeviceInfo>
+  -->
+
+<Profile>
+  <Name>Performance</Name>
+  <!--Map the cooling devices with specfic zones for throttling-->
+  <!-- core 0->cpu -->
+  <ZoneThrottleInfo>
+    <ZoneID>0</ZoneID>
+    <CriticalShutDown>1</CriticalShutDown>
+    <CoolingDeviceInfo>
+      <CoolingDevId>1</CoolingDevId>
+    </CoolingDeviceInfo>
+  </ZoneThrottleInfo>
+
+  <!--
+  <ZoneThrottleInfo>
+    <ZoneID>1</ZoneID>
+    <CriticalShutDown>0</CriticalShutDown>
+    <CoolingDeviceInfo>
+      <CoolingDevId>4</CoolingDevId>
+    </CoolingDeviceInfo>
+  </ZoneThrottleInfo>
+  -->
+</Profile>
+</thermalthrottleconfig>

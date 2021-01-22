@@ -1,0 +1,92 @@
+From 1cac204015231906ee6921d8dac609c80aac3159 Mon Sep 17 00:00:00 2001
+From: "james.lin" <james.lin@rock-chips.com>
+Date: Wed, 18 Apr 2018 09:46:18 +0800
+Subject: [PATCH] support video output non point-to-point
+
+Signed-off-by: james.lin <james.lin@rock-chips.com>
+---
+ sys/kms/gstkmssink.c | 39 +++++++++++++++++++++++++++++++++++----
+ sys/kms/gstkmssink.h |  1 +
+ 2 files changed, 36 insertions(+), 4 deletions(-)
+
+diff --git a/sys/kms/gstkmssink.c b/sys/kms/gstkmssink.c
+index d73cddd..dc9be8c 100755
+--- a/sys/kms/gstkmssink.c
++++ b/sys/kms/gstkmssink.c
+@@ -500,6 +500,22 @@ ensure_allowed_caps (GstKMSSink * self, drmModeConnector * conn,
+   return (self->allowed_caps && !gst_caps_is_empty (self->allowed_caps));
+ }
+ 
++#define HDMI_CARD_PATH "/sys/devices/platform/display-subsystem/drm/card0/card0-HDMI-A-1/mode"
++static gint gst_hdmi_get_current_mode(guint16 *xres, guint16 *yres) {
++  gchar  value[50];
++  gint ret = -1;
++  gint fd;
++  fd = open(HDMI_CARD_PATH, 0x0 /*O_RDONLY*/, 0);
++  if (fd > 0) {
++    ret = read(fd, value, 50);
++    if (ret > 0) {
++      sscanf(value, "%dx%d", xres, yres);
++    }
++    close(fd);
++  }
++  return ret;
++}
++
+ static gboolean
+ gst_kms_sink_start (GstBaseSink * bsink)
+ {
+@@ -582,8 +598,14 @@ retry_find_plane:
+   GST_INFO_OBJECT (self, "connector id = %d / crtc id = %d / plane id = %d",
+       self->conn_id, self->crtc_id, self->plane_id);
+ 
+-  self->hdisplay = crtc->mode.hdisplay;
+-  self->vdisplay = crtc->mode.vdisplay;
++  /* crtc consider as fb size and hdmi consider as output size */
++  self->hdisplay = self->fb_hdisplay = crtc->mode.hdisplay;
++  self->vdisplay = self->fb_vdisplay = crtc->mode.vdisplay;
++  if (gst_hdmi_get_current_mode(&self->hdisplay, &self->vdisplay) <= 0) {
++    self->hdisplay = crtc->mode.hdisplay;
++    self->vdisplay = crtc->mode.vdisplay;
++  }
++
+   self->buffer_id = crtc->buffer_id;
+ 
+   self->mm_width = conn->mmWidth;
+@@ -1249,10 +1271,19 @@ gst_kms_sink_set_render_rectangle (GstVideoOverlay * overlay,
+   GstKMSSink *kmssink = GST_KMS_SINK (overlay);
+ 
+   if (x >= 0 && y >= 0 && width > 0 && height > 0) {
+-	kmssink->save_rect.w = width;
+-	kmssink->save_rect.h = height;
++	kmssink->save_rect.w = MIN(width, kmssink->fb_hdisplay);
++	kmssink->save_rect.h = MIN(height, kmssink->fb_vdisplay);
+ 	kmssink->save_rect.x = x;
+ 	kmssink->save_rect.y = y;
++    if (kmssink->fb_hdisplay != kmssink->hdisplay || kmssink->fb_vdisplay != kmssink->vdisplay) {
++      gdouble hscale, vscale;
++      hscale = ((gdouble)kmssink->hdisplay) / kmssink->fb_hdisplay;
++      vscale = ((gdouble)kmssink->vdisplay) / kmssink->fb_vdisplay;
++      kmssink->save_rect.w = kmssink->save_rect.w * hscale;
++      kmssink->save_rect.h = kmssink->save_rect.h * vscale;
++      kmssink->save_rect.x = kmssink->save_rect.x * hscale;
++      kmssink->save_rect.y = kmssink->save_rect.y * vscale;
++    }
+   }
+ }
+ 
+diff --git a/sys/kms/gstkmssink.h b/sys/kms/gstkmssink.h
+index b79f462..2302e90 100755
+--- a/sys/kms/gstkmssink.h
++++ b/sys/kms/gstkmssink.h
+@@ -56,6 +56,7 @@ struct _GstKMSSink {
+ 
+   /* crtc data */
+   guint16 hdisplay, vdisplay;
++  guint16 fb_hdisplay, fb_vdisplay;
+   guint32 buffer_id;
+ 
+   /* capabilities */
+-- 
+2.7.4
+

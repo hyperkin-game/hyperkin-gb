@@ -1,0 +1,33 @@
+From 5228c16f0902bb764f175807a5924b6819467fc2 Mon Sep 17 00:00:00 2001
+From: Guochun Huang <hero.huang@rock-chips.com>
+Date: Tue, 19 Dec 2017 14:06:28 +0800
+Subject: [PATCH] glibc-2.23: add support reboot loader command
+
+Signed-off-by: Guochun Huang <hero.huang@rock-chips.com>
+---
+ sysdeps/unix/sysv/linux/reboot.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/sysdeps/unix/sysv/linux/reboot.c b/sysdeps/unix/sysv/linux/reboot.c
+index b231f61..5954629 100644
+--- a/sysdeps/unix/sysv/linux/reboot.c
++++ b/sysdeps/unix/sysv/linux/reboot.c
+@@ -21,9 +21,14 @@
+ #include <sysdep.h>
+ #include <sys/syscall.h>
+ 
++#define	LINUX_REBOOT_CMD	0xa1b2c3d4
++
+ /* Call kernel with additional two arguments the syscall requires.  */
+ int
+ reboot (int howto)
+ {
+-  return INLINE_SYSCALL (reboot, 3, (int) 0xfee1dead, 672274793, howto);
++  if(howto == LINUX_REBOOT_CMD)
++	return INLINE_SYSCALL (reboot, 4, (int) 0xfee1dead, 672274793, howto, "loader");
++  else
++	return INLINE_SYSCALL (reboot, 3, (int) 0xfee1dead, 672274793, howto);
+ }
+-- 
+1.9.1
+

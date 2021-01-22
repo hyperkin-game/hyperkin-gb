@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TuneTask>
+      <Capture  format="CamSys_Fmt_Raw_12b"  number="1" enable="1">
+           <Resolution width="1632" height="1224"/>
+      <Exposure mode="auto">
+                  <Mec integration_time="50" gain="5" integration_time_step="0" gain_step="0" min_raw="0" max_raw="256" threshold="100" ae_around="false" number="50" />
+      </Exposure>
+      <Wdr mode="disable"/>
+      <Cac mode="disable"/>
+      <Gamma mode="disable"/>
+      <Lsc mode="disable"/>
+      <Dpcc mode="disable"/>
+      <Bls mode="disable"/>
+      <Adpf mode="disable"/>
+      <Avs mode="disable"/>
+      <Focus mode="test">
+                  <OscTest min_dis="0"  max_dis="0" dis_step="0"/>
+      </Focus>
+   </Capture>
+</TuneTask>

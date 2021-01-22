@@ -1,0 +1,76 @@
+From a686c4910790aa43792feb6fa9578067add124e8 Mon Sep 17 00:00:00 2001
+From: Hertz Wang <wangh@rock-chips.com>
+Date: Mon, 12 Nov 2018 14:20:33 +0800
+Subject: [PATCH 2/3] [ffmpeg 3.4.2]: find_codec prefer hardware capability
+
+Change-Id: Ib885af15b8942ea13cc1e944ab84ecb6b939ac70
+Signed-off-by: Hertz Wang <wangh@rock-chips.com>
+---
+ libavcodec/avcodec.h  |  2 ++
+ libavcodec/rkmppdec.c |  2 +-
+ libavcodec/utils.c    | 13 +++++++++----
+ 3 files changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/libavcodec/avcodec.h b/libavcodec/avcodec.h
+index 18c3e3e..061f9b9 100644
+--- a/libavcodec/avcodec.h
++++ b/libavcodec/avcodec.h
+@@ -1098,6 +1098,8 @@ typedef struct RcOverride{
+  */
+ #define AV_CODEC_CAP_LOSSLESS         0x80000000
+ 
++#define AV_CODEC_CAP_HARDWARE            (1 << 18)
++
+ 
+ #if FF_API_WITHOUT_PREFIX
+ /**
+diff --git a/libavcodec/rkmppdec.c b/libavcodec/rkmppdec.c
+index f908ae5..3c8263d 100644
+--- a/libavcodec/rkmppdec.c
++++ b/libavcodec/rkmppdec.c
+@@ -585,7 +585,7 @@ static void rkmpp_flush(AVCodecContext *avctx)
+         .receive_frame  = rkmpp_receive_frame, \
+         .flush          = rkmpp_flush, \
+         .priv_class     = &rkmpp_##NAME##_dec_class, \
+-        .capabilities   = AV_CODEC_CAP_DELAY, \
++        .capabilities   = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_HARDWARE, \
+         .caps_internal  = AV_CODEC_CAP_AVOID_PROBING, \
+         .pix_fmts       = (const enum AVPixelFormat[]) { AV_PIX_FMT_DRM_PRIME, \
+                                                          AV_PIX_FMT_NONE}, \
+diff --git a/libavcodec/utils.c b/libavcodec/utils.c
+index 0c47e76..632f41c 100644
+--- a/libavcodec/utils.c
++++ b/libavcodec/utils.c
+@@ -1237,7 +1237,7 @@ static enum AVCodecID remap_deprecated_codec_id(enum AVCodecID id)
+ 
+ static AVCodec *find_encdec(enum AVCodecID id, int encoder)
+ {
+-    AVCodec *p, *experimental = NULL;
++    AVCodec *p, *experimental = NULL, *first = NULL;
+     p = first_avcodec;
+     id= remap_deprecated_codec_id(id);
+     while (p) {
+@@ -1245,12 +1245,17 @@ static AVCodec *find_encdec(enum AVCodecID id, int encoder)
+             p->id == id) {
+             if (p->capabilities & AV_CODEC_CAP_EXPERIMENTAL && !experimental) {
+                 experimental = p;
+-            } else
+-                return p;
++            } else {
++                if (!first)
++                    first = p;
++                // prefer hardware
++                if (p->capabilities & AV_CODEC_CAP_HARDWARE)
++                    return (AVCodec*)p;
++            }
+         }
+         p = p->next;
+     }
+-    return experimental;
++    return experimental ? experimental : first;
+ }
+ 
+ AVCodec *avcodec_find_encoder(enum AVCodecID id)
+-- 
+2.7.4
+

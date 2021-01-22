@@ -1,0 +1,35 @@
+From 443c7472a74dfe4ad6594b8562c9a554b5d9cfde Mon Sep 17 00:00:00 2001
+From: Jeffy Chen <jeffy.chen@rock-chips.com>
+Date: Wed, 6 Jun 2018 21:30:26 +0800
+Subject: [PATCH] qwaylandwindow: Clear current surface before destroy
+
+Signed-off-by: Jeffy Chen <jeffy.chen@rock-chips.com>
+---
+ src/client/qwaylandwindow.cpp | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
+index 5908c1d..6d383a0 100644
+--- a/src/client/qwaylandwindow.cpp
++++ b/src/client/qwaylandwindow.cpp
+@@ -246,8 +246,16 @@ void QWaylandWindow::reset()
+     mShellSurface = 0;
+     delete mSubSurfaceWindow;
+     mSubSurfaceWindow = 0;
+-    if (isInitialized())
++    if (isInitialized()) {
++#ifndef QT_NO_OPENGL
++        QOpenGLContext *context = QOpenGLContext::currentContext();
++        if (context && context->surface() == surface())
++            context->doneCurrent();
++#endif
++        invalidateSurface();
++
+         destroy();
++    }
+ 
+     if (mFrameCallback)
+         wl_callback_destroy(mFrameCallback);
+-- 
+2.11.0
+

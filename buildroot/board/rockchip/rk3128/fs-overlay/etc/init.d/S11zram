@@ -1,0 +1,25 @@
+#!/bin/sh
+#
+# Do some initialzation for Rockchip Linux SDK....
+#
+
+case "$1" in
+start)
+        echo lz4 > /sys/block/zram0/comp_algorithm
+        echo 50M > /sys/block/zram0/disksize
+        echo 25M > /sys/block/zram0/mem_limit
+        mkswap /dev/zram0
+        swapon /dev/zram0
+
+        ;;
+stop)
+	swapoff -a
+	echo 1 > /sys/block/zram0/reset
+        ;;
+*)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+esac
+
+exit 0
+

@@ -1,0 +1,4 @@
+.qmake.stash
+musicPlayer
+Makefile
+pkg-config_wrapper.sh

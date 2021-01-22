@@ -1,0 +1,2 @@
+source /etc/check_dumper.sh
+$(KillGame)

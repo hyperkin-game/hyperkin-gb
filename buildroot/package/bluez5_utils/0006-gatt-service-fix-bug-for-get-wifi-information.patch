@@ -1,0 +1,95 @@
+From f2eaf2563d6452d47776c45e318fd5513bf500e9 Mon Sep 17 00:00:00 2001
+From: fan zhen ke <fanzy.fan@rock-chips.com>
+Date: Tue, 25 Sep 2018 16:28:02 +0800
+Subject: [PATCH] gatt-service:fix bug for get wifi information
+
+
+diff --git a/tools/gatt-service.c b/tools/gatt-service.c
+index 5bd1776..b58492e 100644
+--- a/tools/gatt-service.c
++++ b/tools/gatt-service.c
+@@ -804,18 +804,23 @@ static gboolean config_wifi() {
+     execute_result = !strncmp(buff,"OK",2);
+     
+     if(!execute_result){
+-        perror("setNetWorkPWD failed.\n");
++        perror("selectNetWork failed.\n");
+         return FALSE;
+     }
+-    
+-    //7. save config
+-    execute("wpa_cli save_config", buff);
+ 
+     return TRUE;
+ }
+ 
+-static bool save_wifi_config(const char* name, const char* pwd)
++static bool save_wifi_config(int mode)
+ {
++    //7. save config
++    char buff[256] = {0};
++    if (mode == 1)
++        execute("wpa_cli save_config", buff);
++    else 
++        execute("wpa_cli flush", buff);
++    return 0;
++/*
+     FILE *fp;
+     char body[256];
+     int fd;
+@@ -836,6 +841,7 @@ static bool save_wifi_config(const char* name, const char* pwd)
+     }
+     fclose(fp);
+     return 0;
++*/
+ }
+ static bool saveCheckdata()
+ {
+@@ -903,13 +909,14 @@ static void *config_wifi_thread(void)
+ 	saveCheckdata();        
+ 	if (!config_wifi())
+ 	    return;
+-        //saveWifiConfig();
+         
+         if (check_wifi_isconnected()) {
++            save_wifi_config(1);
+             level = 1;
+             chr_write(temp_chr, &level, sizeof(level));
+             g_main_loop_quit(main_loop); 
+         } else {
++            save_wifi_config(0);
+             level = 0;
+             chr_write(temp_chr, &level, sizeof(level));    
+         }
+@@ -1004,22 +1011,22 @@ static DBusMessage *chr_write_value(DBusConnection *conn, DBusMessage *msg,
+ #else
+ 	chr_write(chr, value, len);
+ 	chr->value[len] = '\0';
+-	printf("chr_write_value  %s\n", chr->value);
+-        if (!strcmp(SSID_CHAR_UUID, chr->uuid)){
+-                strncpy(wifi_ssid, chr->value, len);
++	printf("chr_write_value  %s, %d\n", chr->value, len);
++        if (!strcmp(SSID_CHAR_UUID, chr->uuid)){                
++                strcpy(wifi_ssid, chr->value);
+                 printf("wifi ssid is  %s\n", wifi_ssid);
+         }
+         if (!strcmp(PASSWORD_CHAR_UUID, chr->uuid)){
+-                strncpy(wifi_password, chr->value, len);
++                strcpy(wifi_password, chr->value);
+         	printf("wifi pwd is  %s\n", wifi_password);
+ 	}
+ 	if (!strcmp(HIDE_CHAR_UUID, chr->uuid)){
+-                strncpy(wifi_hide, chr->value, len);
++                strcpy(wifi_hide, chr->value);
+                 printf("wifi hide is  %s\n", wifi_hide);                            
+         }
+ 		
+ 	if (!strcmp(SECURITY_CHAR_UUID, chr->uuid)){
+-                strncpy(wifi_security, chr->value, len);
++                strcpy(wifi_security, chr->value);
+                 printf("wifi sec is  %s\n", wifi_security);                            
+         }
+ 		
+-- 
+2.18.0
+

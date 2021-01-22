@@ -1,0 +1,6 @@
+BRK01-RK3128
+M:      Stanley <stanley@bte.com.tw>
+S:      Maintained
+F:      board/rockchip/brk01_rk3128
+F:      include/configs/brk01_rk3128.h
+F:      configs/gamesim-brk01_defconfig

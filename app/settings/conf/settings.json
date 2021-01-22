@@ -1,0 +1,6 @@
+    {
+        "app_name": "settings",
+        "app_icon": "icon_setting.png",
+        "app_file": "settings",
+	"i18n":"i18n.ini"
+    }

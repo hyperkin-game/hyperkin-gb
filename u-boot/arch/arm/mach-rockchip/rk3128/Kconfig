@@ -1,0 +1,42 @@
+if ROCKCHIP_RK3128
+
+choice
+	prompt "RK3128 board select"
+
+config TARGET_EVB_RK3128
+	bool "RK3128 evaluation board"
+	select BOARD_LATE_INIT
+	help
+	  RK3128evb is a evaluation board for Rockchip rk3128,
+	  with full function and phisical connectors support like
+	  usb2.0 host ports, LVDS, JTAG, MAC, SDcard, HDMI, USB-2-serial...
+
+config TARGET_GAMESIM_RK3128
+	bool "RK3128 game simulator board"
+	select BOARD_LATE_INIT
+	help
+	  RK3128 game simulator is board for Rockchip rk3128,
+	  with function and phisical connectors support like
+	  usb2.0 host ports, LVDS/RGB, SFC, SDcard, HDMI...
+
+config TARGET_BRK01_RK3128
+	bool "RK3128 GB/GBC/GBA simulator board"
+	select BOARD_LATE_INIT
+	help
+	  RK3128 brk01 simulator is board for Rockchip rk3128,
+	  with function and phisical connectors support like
+	  usb2.0 host ports, HDMI/TV, SDcard, ...
+
+endchoice
+
+config SYS_SOC
+	default "rockchip"
+
+config SYS_MALLOC_F_LEN
+	default 0x0800
+
+source "board/rockchip/evb_rk3128/Kconfig"
+source "board/rockchip/gamesim_rk3128/Kconfig"
+source "board/rockchip/brk01_rk3128/Kconfig"
+
+endif

@@ -1,0 +1,37 @@
+From de0b0e25091b9b52019a430b2e5a8eaf715907e0 Mon Sep 17 00:00:00 2001
+From: zyh <zyh@rock-chips.com>
+Date: Wed, 10 May 2017 15:21:05 +0800
+Subject: [PATCH] bluez: a2dp: fix a2dp volume control using iphone
+
+---
+ profiles/audio/avrcp.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/profiles/audio/avrcp.c b/profiles/audio/avrcp.c
+index 37bc291..210a06c 100644
+--- a/profiles/audio/avrcp.c
++++ b/profiles/audio/avrcp.c
+@@ -3810,13 +3810,16 @@ static void target_init(struct avrcp *session)
+ 				(1 << AVRCP_EVENT_TRACK_REACHED_END) |
+ 				(1 << AVRCP_EVENT_SETTINGS_CHANGED);
+ 
+-	if (target->version < 0x0104)
+-		return;
++//	if (target->version < 0x0104)
++//		return;
++    if (target->version >= 0x0104)
++                avrcp_register_notification(session,
++                                 AVRCP_EVENT_VOLUME_CHANGED);
+ 
+ 	session->supported_events |=
+ 				(1 << AVRCP_EVENT_ADDRESSED_PLAYER_CHANGED) |
+-				(1 << AVRCP_EVENT_AVAILABLE_PLAYERS_CHANGED) |
+-				(1 << AVRCP_EVENT_VOLUME_CHANGED);
++				(1 << AVRCP_EVENT_AVAILABLE_PLAYERS_CHANGED);
++//				(1 << AVRCP_EVENT_VOLUME_CHANGED);
+ 
+ 	/* Only check capabilities if controller is not supported */
+ 	if (session->controller == NULL)
+-- 
+1.9.1
+

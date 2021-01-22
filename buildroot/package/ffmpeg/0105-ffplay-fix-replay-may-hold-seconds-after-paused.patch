@@ -1,0 +1,26 @@
+From cc0398ee212011f46bd6de4b572327e6487c0437 Mon Sep 17 00:00:00 2001
+From: Hertz Wang <wangh@rock-chips.com>
+Date: Fri, 23 Nov 2018 17:43:18 +0800
+Subject: [PATCH 1/1] ffplay: fix replay may hold seconds after paused
+
+Signed-off-by: Hertz Wang <wangh@rock-chips.com>
+---
+ fftools/ffplay.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/fftools/ffplay.c b/fftools/ffplay.c
+index 7ec1ded..37ee77f 100644
+--- a/fftools/ffplay.c
++++ b/fftools/ffplay.c
+@@ -1786,7 +1786,7 @@ static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int seek_by_by
+ static void stream_toggle_pause(VideoState *is)
+ {
+     if (is->paused) {
+-        is->frame_timer += av_gettime_relative() / 1000000.0 - is->vidclk.last_updated;
++        is->frame_timer = av_gettime_relative() / 1000000.0; // make play immediately
+         if (is->read_pause_return != AVERROR(ENOSYS)) {
+             is->vidclk.paused = 0;
+         }
+-- 
+2.7.4
+

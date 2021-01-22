@@ -1,0 +1,50 @@
+From 485b0c90dc3ea5e4e3de983a264451278251256c Mon Sep 17 00:00:00 2001
+From: fan zhen ke <fanzy.fan@rock-chips.com>
+Date: Sat, 29 Sep 2018 08:38:58 +0800
+Subject: [PATCH] bluetoothd:modify the bt name with mac addr
+
+
+diff --git a/src/main.c b/src/main.c
+index 4c522f8..6fff4c2 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -464,7 +464,8 @@ static void init_defaults(void)
+ 	get_mac_address(main_opts.name + sizeof("DUEROS_") - 1, 5, "wlan0");
+ #else
+ 	//main_opts.name = g_strdup_printf("BlueZ %s", VERSION);
+-	main_opts.name = g_strdup_printf("Yami");
++	main_opts.name = g_strdup_printf("Rockchip-1234");
++	get_mac_address(main_opts.name + sizeof("Rockchip-") - 1, 5, "wlan0");
+ #endif
+ 
+ 	main_opts.class = 0x000000;
+diff --git a/tools/gatt-service.c b/tools/gatt-service.c
+index b58492e..5701399 100644
+--- a/tools/gatt-service.c
++++ b/tools/gatt-service.c
+@@ -1334,11 +1334,12 @@ static void send_advertise(){
+         sleep(1);
+         
+         // LE Set Advertising Data Command
+-        len = len + strlen(BT_NAME) +2;
++        //len = len + strlen(BT_NAME) +2;
+         sprintf(temp,"%02x", len);
+         strcat(CMD_ADV_DATA, temp);                                          //add len
+         strcat(CMD_ADV_DATA, " 02 01 06 11 07 ");                            //add flag
+         strcat(CMD_ADV_DATA, SERVICES_UUID);                                 //add uuid
++/*
+         sprintf(temp,"%02x", strlen(BT_NAME) + 1);
+         strcat(CMD_ADV_DATA, " ");
+         strcat(CMD_ADV_DATA, temp);
+@@ -1348,7 +1349,7 @@ static void send_advertise(){
+                 sprintf(temp,"%02x", BT_NAME[i]);
+                 strcat(CMD_ADV_DATA, temp);
+         }
+-    
++*/    
+         execute(CMD_ADV_DATA, buff);
+         sleep(1);
+ 
+-- 
+2.18.0
+

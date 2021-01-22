@@ -1,0 +1,4 @@
+.qmake.stash
+videoPlayer
+Makefile
+pkg-config_wrapper.sh

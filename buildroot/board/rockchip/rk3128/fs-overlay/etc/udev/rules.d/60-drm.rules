@@ -1,0 +1,1 @@
+SUBSYSTEM=="drm", ACTION=="add|change", RUN+="/usr/bin/drm-hotplug.sh"

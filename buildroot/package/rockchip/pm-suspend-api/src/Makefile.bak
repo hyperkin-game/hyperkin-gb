@@ -1,0 +1,38 @@
+ifeq ($(PARAM_FILE), )
+	PARAM_FILE:=../Makefile.param
+	include $(PARAM_FILE)
+endif
+
+IFLAGS := -g -Wall -I $(SYSROOT_DIR)/usr/include/dbus-1.0 -I $(SYSROOT_DIR)/usr/include/glib-2.0 -I $(SYSROOT_DIR)/usr/lib/glib-2.0/include -I $(SYSROOT_DIR)/usr/lib/dbus-1.0/include
+
+DFLAGS += -ldbus-1
+
+CFLAGS += $(IFLAGS) $(DFLAGS)
+
+all: libsuspend_api.so app_test1 app_test2 sleep_test
+
+dbus_suspend_api.o: dbus_suspend_api.c
+	$(CC) -c dbus_suspend_api.c $(CFLAGS) -fPIC 
+
+libsuspend_api.so: dbus_suspend_api.o
+	$(CC) -o $@ dbus_suspend_api.o $(CFLAGS) -fPIC -shared
+
+app_test1: app_test1.o libsuspend_api.so
+	$(CC) -o $@ app_test1.o $(CFLAGS) -lsuspend_api -L./
+
+app_test2: app_test2.o libsuspend_api.so
+	$(CC) -o $@ app_test2.o $(CFLAGS) -lsuspend_api -L./
+
+sleep_test: sleep_test.o libsuspend_api.so
+	$(CC) -o $@ sleep_test.o $(CFLAGS) -lsuspend_api -L./
+
+clean:
+	-rm -f app_test1 *.o
+	-rm -f app_test2 *.o
+
+install:
+	$(STRIP) -s app_test1 app_test2
+	test -d $(TARGET_DIR)/bin || mkdir -p $(TARGET_DIR)/bin
+	cp -f app_test1 $(TARGET_DIR)/bin
+	cp -f app_test2 $(TARGET_DIR)/bin
+	

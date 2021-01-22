@@ -1,0 +1,16 @@
+diff --git a/src/client/qwaylandscreen.cpp b/src/client/qwaylandscreen.cpp
+index ac59545..dc56ad5 100755
+--- a/src/client/qwaylandscreen.cpp
++++ b/src/client/qwaylandscreen.cpp
+@@ -180,6 +180,11 @@ void QWaylandScreen::output_mode(uint32_t flags, int width, int height, int refr
+     if (!(flags & WL_OUTPUT_MODE_CURRENT))
+         return;
+ 
++    char *_displaysize = getenv("WAYLAND_FAKE_UI_SIZE");
++    if (_displaysize != NULL) {
++        sscanf(_displaysize, "%dx%d@%d", &width, &height, &refresh);
++    }
++
+     QSize size(width, height);
+ 
+     if (size != mGeometry.size())

@@ -1,0 +1,6 @@
+    {
+        "app_name": "video",
+        "app_icon": "icon_video.png",
+        "app_file": "videoPlayer",
+	"i18n":"i18n.ini"
+    }

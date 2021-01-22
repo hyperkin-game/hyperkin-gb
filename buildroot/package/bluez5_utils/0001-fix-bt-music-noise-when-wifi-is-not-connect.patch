@@ -1,0 +1,31 @@
+From f6425a87f31ad674a3e2cbb94ee2d301fb9ef930 Mon Sep 17 00:00:00 2001
+From: zyh <zyh@rock-chips.com>
+Date: Sat, 13 May 2017 10:35:29 +0800
+Subject: [PATCH] fix bt music noise when wifi is not connect
+
+Signed-off-by: zyh <zyh@rock-chips.com>
+---
+ profiles/audio/avctp.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/profiles/audio/avctp.c b/profiles/audio/avctp.c
+index 22bf35b..322e6bc 100644
+--- a/profiles/audio/avctp.c
++++ b/profiles/audio/avctp.c
+@@ -1117,6 +1117,13 @@ static void init_uinput(struct avctp *session)
+ 		error("AVRCP: failed to init uinput for %s", address);
+ 	else
+ 		DBG("AVRCP: uinput initialized for %s", address);
++    system("hcitool cmd 0x3F 0x11A 0x0a 0x00 0x01 0x01");
++    system("hcitool cmd 0x3F 0x11A 0x0b 0x00 0x01 0x01");
++    system("hcitool cmd 0x3F 0x11A 0x0c 0x00 0x01 0x01");
++    system("hcitool cmd 0x3F 0x11A 0x0d 0x00 0x01 0x01");
++    system("hcitool cmd 0x3F 0x11A 0x0e 0x00 0x01 0x01");
++    system("hcitool cmd 0x3F 0x11A 0x0f 0x00 0x01 0x01");
++
+ }
+ 
+ static struct avctp_channel *avctp_channel_create(struct avctp *session,
+-- 
+1.9.1
+

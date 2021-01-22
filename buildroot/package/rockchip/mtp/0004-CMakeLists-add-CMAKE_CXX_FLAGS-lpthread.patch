@@ -1,0 +1,26 @@
+From 428927345713e101978c6cc71fefde3410c05bde Mon Sep 17 00:00:00 2001
+From: Hans Yang <yhx@rock-chips.com>
+Date: Wed, 20 Feb 2019 19:15:15 +0800
+Subject: [PATCH] CMakeLists: add CMAKE_CXX_FLAGS -lpthread
+
+Signed-off-by: Hans Yang <yhx@rock-chips.com>
+---
+ CMakeLists.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 707b7f8..149046f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 2.8)
+ include(FindPkgConfig)
+ include(GNUInstallDirs)
+ 
+-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
++set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -lpthread")
+ 
+ add_definitions(-DMTP_DEVICE -DMTP_HOST -D_FILE_OFFSET_BITS=64)
+ 
+-- 
+2.7.4
+

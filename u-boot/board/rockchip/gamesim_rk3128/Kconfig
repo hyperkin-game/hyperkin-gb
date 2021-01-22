@@ -1,0 +1,15 @@
+if TARGET_GAMESIM_RK3128
+
+config SYS_BOARD
+	default "gamesim_rk3128"
+
+config SYS_VENDOR
+	default "rockchip"
+
+config SYS_CONFIG_NAME
+	default "gamesim_rk3128"
+
+config BOARD_SPECIFIC_OPTIONS # dummy
+	def_bool y
+
+endif

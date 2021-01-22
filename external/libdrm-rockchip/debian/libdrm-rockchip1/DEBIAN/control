@@ -1,0 +1,17 @@
+Package: libdrm-rockchip1
+Source: libdrm
+Version: 2.4.68-2
+Architecture: armhf
+Maintainer: Debian X Strike Force <debian-x@lists.debian.org>
+Installed-Size: 69
+Depends: libc6 (>= 2.4), libdrm2 (>= 2.4.3)
+Section: libs
+Priority: optional
+Multi-Arch: same
+Homepage: http://cgit.freedesktop.org/mesa/drm/
+Description: Userspace interface to msm/kgsl kernel DRM services -- runtime
+ This library implements the userspace interface to the kernel DRM
+ services.  DRM stands for "Direct Rendering Manager", which is the
+ kernelspace portion of the "Direct Rendering Infrastructure" (DRI).
+ The DRI is currently used on Linux to provide hardware-accelerated
+ OpenGL drivers.

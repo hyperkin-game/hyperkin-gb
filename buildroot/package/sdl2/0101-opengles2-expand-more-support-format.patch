@@ -1,0 +1,22 @@
+diff --git a/src/render/opengles2/SDL_render_gles2.c b/src/render/opengles2/SDL_render_gles2.c
+--- a/src/render/opengles2/SDL_render_gles2.c	2020-03-11 09:36:18.000000000 +0800
++++ b/src/render/opengles2/SDL_render_gles2.c	2020-07-02 12:03:34.175324322 +0800
+@@ -2155,12 +2155,16 @@
+     {
+         "opengles2",
+         (SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE),
+-        4,
++        8,
+         {
+         SDL_PIXELFORMAT_ARGB8888,
+         SDL_PIXELFORMAT_ABGR8888,
+         SDL_PIXELFORMAT_RGB888,
+-        SDL_PIXELFORMAT_BGR888
++	SDL_PIXELFORMAT_BGR888,
++	SDL_PIXELFORMAT_IYUV,
++	SDL_PIXELFORMAT_YV12,
++	SDL_PIXELFORMAT_NV12,
++	SDL_PIXELFORMAT_NV21
+         },
+         0,
+         0

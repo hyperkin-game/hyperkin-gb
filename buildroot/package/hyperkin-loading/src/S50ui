@@ -1,0 +1,51 @@
+#!/bin/sh
+#
+# Start Weston and Games
+#
+source /etc/check_dumper.sh
+MINIGUI=1  # minigui or weston
+
+case "$1" in
+  start)
+    printf "Starting ui: "
+    export XDG_CONFIG_HOME=/userdata/
+
+    if [ $MINIGUI -eq 1 ]; then
+      amixer cset name='Master Playback Volume' 99
+      amixer cset name='HDMI Playback Volume' 99
+
+      #uevent from switch is trigger too early that udev rules is not functioning
+      if [ `cat /sys/class/switch/h2w/state` == 2 ]; then
+        amixer cset name='Playback Path' 'HP'
+      else
+        if [ `cat /sys/class/drm/card0-HDMI-A-1/status` == "connected" ]; then
+          amixer cset name='Playback Path' 'OFF'
+        else
+          amixer cset name='Playback Path' 'HP'
+        fi
+      fi
+
+	/usr/bin/fbv -c -i -s 1 /etc/hyperkin-inc-vector-logo.png
+	$(RunGame)
+    else
+      export LC_ALL='zh_CN.utf8'
+
+      mkdir -p /tmp/.xdg &&  chmod 0700 /tmp/.xdg
+      export XDG_RUNTIME_DIR=/tmp/.xdg
+      weston --tty=2 --idle-time=0&
+    fi
+    ;;
+  stop)
+    if [ $MINIGUI -eq 1 ]; then
+      killall game
+	$(KillGame)
+    else
+      killall weston
+    fi
+    printf "ui stop finished"
+    ;;
+  *)
+    echo "Usage: $0 {start|stop}"
+    exit 1
+    ;;
+esac

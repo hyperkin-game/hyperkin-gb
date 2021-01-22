@@ -1,0 +1,5 @@
+config BR2_PACKAGE_MINIGUI_GAME
+	bool "Minigui demo launcher of game"
+	depends on BR2_PACKAGE_MINIGUI
+	help
+	  Minigui demo launcher

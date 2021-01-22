@@ -1,0 +1,42 @@
+diff -Naur SDL2-2.0.12/src/video/kmsdrm/SDL_kmsdrmvideo.c SDL2-2.0.12-new/src/video/kmsdrm/SDL_kmsdrmvideo.c
+--- SDL2-2.0.12/src/video/kmsdrm/SDL_kmsdrmvideo.c	2020-03-11 09:36:18.000000000 +0800
++++ SDL2-2.0.12-new/src/video/kmsdrm/SDL_kmsdrmvideo.c	2020-07-02 23:37:18.086491628 +0800
+@@ -435,6 +435,7 @@
+     drmModeEncoder *encoder = NULL;
+     char devname[32];
+     SDL_VideoDisplay display = {0};
++    char* monitor_index = NULL;
+ 
+     dispdata = (SDL_DisplayData *) SDL_calloc(1, sizeof(SDL_DisplayData));
+ 
+@@ -470,6 +471,8 @@
+         goto cleanup;
+     }
+ 
++    monitor_index = SDL_getenv("SDL_MONITOR_INDEX");
++
+     for (int i = 0; i < resources->count_connectors; i++) {
+         drmModeConnector *conn = KMSDRM_drmModeGetConnector(viddata->drm_fd, resources->connectors[i]);
+ 
+@@ -478,10 +481,18 @@
+         }
+ 
+         if (conn->connection == DRM_MODE_CONNECTED && conn->count_modes) {
+-            SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "Found connector %d with %d modes.",
++            if(monitor_index == NULL){
++                SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "Found connector %d with %d modes.",
+                          conn->connector_id, conn->count_modes);
+-            dispdata->conn = conn;
+-            break;
++                dispdata->conn = conn;
++                break;
++            }else{
++                int index = atoi(monitor_index);
++		if( ( i + 1 ) == index){
++                    dispdata->conn = conn;
++                    break;
++                }
++            }
+         }
+ 
+         KMSDRM_drmModeFreeConnector(conn);

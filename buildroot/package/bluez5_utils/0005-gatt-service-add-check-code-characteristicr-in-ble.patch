@@ -1,0 +1,533 @@
+From 5391ce30b01e05fc0667a44d587f72352294fb08 Mon Sep 17 00:00:00 2001
+From: "alan.yan" <alan.yan@rock-chips.com>
+Date: Tue, 11 Sep 2018 15:38:03 +0800
+Subject: [PATCH] gatt service add check code characteristicr in ble
+
+Signed-off-by: alan.yan <alan.yan@rock-chips.com>
+---
+ src/main.c           |   3 +-
+ tools/gatt-service.c | 312 +++++++++++++++++++++++++++++++++++++++++----------
+ 2 files changed, 256 insertions(+), 59 deletions(-)
+
+diff --git a/src/main.c b/src/main.c
+index 8116104..4c522f8 100755
+--- a/src/main.c
++++ b/src/main.c
+@@ -463,7 +463,8 @@ static void init_defaults(void)
+ 	main_opts.name = g_strdup_printf("DUEROS_1234");
+ 	get_mac_address(main_opts.name + sizeof("DUEROS_") - 1, 5, "wlan0");
+ #else
+-	main_opts.name = g_strdup_printf("BlueZ %s", VERSION);
++	//main_opts.name = g_strdup_printf("BlueZ %s", VERSION);
++	main_opts.name = g_strdup_printf("Yami");
+ #endif
+ 
+ 	main_opts.class = 0x000000;
+diff --git a/tools/gatt-service.c b/tools/gatt-service.c
+index 3cce6e2..5bd1776 100755
+--- a/tools/gatt-service.c
++++ b/tools/gatt-service.c
+@@ -37,6 +37,7 @@
+ #include <sys/stat.h>
+ #include <sys/un.h>
+ #include <time.h>
++#include <pthread.h>
+ 
+ #include <glib.h>
+ #include <dbus/dbus.h>
+@@ -52,11 +53,15 @@
+ 
+ /* Immediate wifi Service UUID */
+ #define WIFI_SERVICES_UUID       "1B7E8251-2877-41C3-B46E-CF057C562023"
+-#define SECURITY_UUID            "CAC2ABA4-EDBB-4C4A-BBAF-0A84A5CD93A1"
+-#define SSID_UUID                "ACA0EF7C-EEAA-48AD-9508-19A6CEF6B356"
+-#define PASSWORD_UUID            "40B7DE33-93E4-4C8B-A876-D833B415A6CE"
+-#define CONFIG_NOTIFY_UUID       "8AC32D3f-5CB9-4D44-BEC2-EE689169F626"
+-#define CONFIG_UUID              "00002902-0000-1000-8000-00805f9b34fb"
++#define SECURITY_CHAR_UUID       "CAC2ABA4-EDBB-4C4A-BBAF-0A84A5CD93A1"
++#define HIDE_CHAR_UUID           "CAC2ABA4-EDBB-4C4A-BBAF-0A84A5CD26C7"
++#define SSID_CHAR_UUID           "ACA0EF7C-EEAA-48AD-9508-19A6CEF6B356"
++#define PASSWORD_CHAR_UUID       "40B7DE33-93E4-4C8B-A876-D833B415A6CE"
++#define CHECKDATA_CHAR_UUID      "40B7DE33-93E4-4C8B-A876-D833B415C759"
++#define NOTIFY_CHAR_UUID         "8AC32D3f-5CB9-4D44-BEC2-EE689169F626"
++#define NOTIFY_DESC_UUID         "00002902-0000-1000-8000-00805f9b34fb"
++
++#define BT_NAME                  "Yami"
+ 
+ #ifdef DUEROS
+ #define DUEROS_WIFI_SERVICES_UUID       "00001111-0000-1000-8000-00805f9b34fb"
+@@ -83,7 +88,7 @@ typedef struct{
+ 
+ #define CMD_ADV                  "hcitool -i hci0 cmd 0x08 0x0008 15 02 01 06 11 07 fb 34 9b 5f 80 00 00 80 00 10 00 00 11 11 00 00"
+ #else
+-#define CMD_ADV                  "hcitool -i hci0 cmd 0x08 0x0008 15 02 01 06 11 07 23 20 56 7c 05 cf 6e b4 c3 41 77 28 51 82 7e 1b"
++#define SERVICES_UUID            "23 20 56 7c 05 cf 6e b4 c3 41 77 28 51 82 7e 1b"
+ #endif
+ 
+ #define CMD_EN                   "hcitool -i hci0 cmd 0x08 0x000a 1"
+@@ -98,8 +103,15 @@ static GMainLoop *main_loop;
+ static GSList *services;
+ static DBusConnection *connection;
+ 
++static pthread_t wificonfig_tid = 0;
++
+ char wifi_ssid[256];
+ char wifi_password[256];
++char wifi_security[256];
++char wifi_hide[256];
++char check_data[256];
++
++struct characteristic *temp_chr;
+ 
+ struct characteristic {
+ 	char *service;
+@@ -123,7 +135,7 @@ struct descriptor {
+  * Supported properties are defined at doc/gatt-api.txt. See "Flags"
+  * property of the GattCharacteristic1.
+  */
+-//static const char *chr_props[] = { "read", "write", "notify", "indicate", NULL };
++static const char *ias_alert_level_props[] = { "read", "write", NULL };
+ static const char *chr_props[] = { "read", "write", "notify", NULL };
+ static const char *desc_props[] = { "read", "write", NULL };
+ 
+@@ -719,7 +731,7 @@ static int wpa_supplicant_config_wifi() {
+ }
+ 
+ //wpa_cli
+-static gboolean wpa_cli_config_wifi(){
++static gboolean config_wifi() {
+     printf("start config_wifi\n");
+     char buff[256] = {0};
+     char cmdline[256] = {0};
+@@ -733,42 +745,71 @@ static gboolean wpa_cli_config_wifi(){
+         perror("add_network failed.\n");
+         return FALSE;
+     }
+-
++    
+     // 2. setNetWorkSSID
+     memset(cmdline, 0, sizeof(cmdline));
+     sprintf(cmdline,"wpa_cli -iwlan0 set_network %d ssid \\\"%s\\\"",id, wifi_ssid);
+     printf("%s\n", cmdline);
+     execute(cmdline,buff);
+     execute_result = !strncmp(buff,"OK",2);
+-
++    
+     if(!execute_result){
+         perror("setNetWorkSSID failed.\n");
+         return FALSE;
+     }
+-
++    
+     // 3. setNetWorkPWD
++    if (strcmp(wifi_security, "NONE")) {
++    	memset(cmdline, 0, sizeof(cmdline));
++    	sprintf(cmdline,"wpa_cli -iwlan0 set_network %d psk \\\"%s\\\"", id,wifi_password);
++    	printf("%s\n", cmdline);
++    	execute(cmdline,buff);
++    	execute_result = !strncmp(buff,"OK",2);
++    
++   	if(!execute_result){
++            perror("setNetWorkPWD failed.\n");
++            return FALSE;
++    	}
++    }
++	
++    // 4. setNetWorkSECURe
+     memset(cmdline, 0, sizeof(cmdline));
+-    sprintf(cmdline,"wpa_cli -iwlan0 set_network %d psk \\\"%s\\\"", id,wifi_password);
++    sprintf(cmdline,"wpa_cli -iwlan0 set_network %d key_mgmt %s", id,wifi_security);
+     printf("%s\n", cmdline);
+     execute(cmdline,buff);
+     execute_result = !strncmp(buff,"OK",2);
+-
++    
+     if(!execute_result){
+-        perror("setNetWorkPWD failed.\n");
++        perror("setNetWorkSECURe failed.\n");
+         return FALSE;
+     }
+-
+-    // 4. selectNetWork
++	
++    // 5. setNetWorkHIDE
++    memset(cmdline, 0, sizeof(cmdline));
++    sprintf(cmdline,"wpa_cli -iwlan0 set_network %d scan_ssid %s", id,wifi_hide);
++    printf("%s\n", cmdline);
++    execute(cmdline,buff);
++    execute_result = !strncmp(buff,"OK",2);
++    
++    if(!execute_result){
++        perror("setNetWorkHIDE failed.\n");
++        return FALSE;
++    }
++    
++    // 6. selectNetWork
+     memset(cmdline, 0, sizeof(cmdline));
+     sprintf(cmdline,"wpa_cli -iwlan0 select_network %d", id);
+     printf("%s\n", cmdline);
+     execute(cmdline,buff);
+     execute_result = !strncmp(buff,"OK",2);
+-
++    
+     if(!execute_result){
+         perror("setNetWorkPWD failed.\n");
+         return FALSE;
+     }
++    
++    //7. save config
++    execute("wpa_cli save_config", buff);
+ 
+     return TRUE;
+ }
+@@ -794,6 +835,105 @@ static bool save_wifi_config(const char* name, const char* pwd)
+         printf("save wpa_supplicant.conf sucecees.\n");
+     }
+     fclose(fp);
++    return 0;
++}
++static bool saveCheckdata()
++{
++    FILE *fp;
++    int fd;
++    fp = fopen("/data/cfg/check_data", "w");
++
++    if (fp == NULL)
++    {
++        return -1;
++    }
++
++    fputs(check_data, fp);
++    fflush(fp);
++    fd = fileno(fp);
++    if (fd >= 0) {
++        fsync(fd);
++        printf("save check_data sucecees.\n");
++    }
++    fclose(fp);
++
++    return 0;
++}
++static gboolean check_wifi_isconnected()
++{
++        printf("check_wifi_isconnected\n");
++        char ret_buff[256] = {0};
++        char temp_buff[256] = {0};
++        gboolean isWifiConnected = FALSE;
++        
++        for(int i = 0; i < 10; i++) {
++            sleep(3);
++            execute("wpa_cli -iwlan0 status | grep wpa_state", ret_buff);
++            strncpy(temp_buff, ret_buff+10, strlen(ret_buff) - 11);
++            printf("wpa_cli status %s\n", temp_buff);
++            
++            if (strncmp(temp_buff, "COMPLETED", 9) == 0) {
++                sleep(2);
++                execute("wpa_cli -iwlan0 status | grep ip_address", ret_buff);
++                if (strlen(ret_buff) > 0) {
++                    strncpy(temp_buff, ret_buff+11, strlen(ret_buff) - 12);
++                    printf("wpa_cli ip_address %s\n", temp_buff);
++                
++                    if (strncmp(temp_buff, "127.0.0.1", 9) != 0) {
++                        isWifiConnected = TRUE;
++                        printf("wifi is connected.\n");
++                        break;
++                    }
++                }
++            }
++
++        }
++        
++        if (!isWifiConnected) 
++            printf("wifi is not connected.\n");            
++    
++        return isWifiConnected;
++            
++}
++static void *config_wifi_thread(void)
++{
++        printf("config_wifi_thread\n");
++        uint8_t level = 1;
++        
++	saveCheckdata();        
++	if (!config_wifi())
++	    return;
++        //saveWifiConfig();
++        
++        if (check_wifi_isconnected()) {
++            level = 1;
++            chr_write(temp_chr, &level, sizeof(level));
++            g_main_loop_quit(main_loop); 
++        } else {
++            level = 0;
++            chr_write(temp_chr, &level, sizeof(level));    
++        }
++		
++
++     
++}
++static int wifi_config_thread_create(void)
++{
++
++    if (pthread_create(&wificonfig_tid, NULL, config_wifi_thread, NULL)) {
++        printf("Create wifi config thread failed\n");
++        return -1;
++    }
++
++    return 0;
++}
++static int wifi_config_thread_cancel(void)
++{
++
++    if (pthread_cancel(&wificonfig_tid)) {
++        printf("Cancle wifi config thread failed\n");
++        return -1;
++    }
+ 
+     return 0;
+ }
+@@ -822,6 +962,8 @@ static DBusMessage *chr_read_value(DBusConnection *conn, DBusMessage *msg,
+ 	dbus_message_iter_init_append(reply, &iter);
+ 
+ 	chr_read(chr, &iter);
++        chr->value[chr->vlen] = '\0';
++        printf("chr_read_value: %s\n", chr->value );
+ 
+ 	return reply;
+ }
+@@ -829,6 +971,7 @@ static DBusMessage *chr_read_value(DBusConnection *conn, DBusMessage *msg,
+ static DBusMessage *chr_write_value(DBusConnection *conn, DBusMessage *msg,
+ 							void *user_data)
+ {
++	printf("chr_write_value\n");
+ 	struct characteristic *chr = user_data;
+ 	DBusMessageIter iter;
+ 	const uint8_t *value;
+@@ -845,31 +988,51 @@ static DBusMessage *chr_write_value(DBusConnection *conn, DBusMessage *msg,
+ 		return g_dbus_create_error(msg, DBUS_ERROR_INVALID_ARGS,
+ 							"Invalid arguments");
+ 
++	//chr_write(chr, value, len);
++
+ #ifdef DUEROS
+     printf("chr_write_value, len: %d\n", len);
+     for(int i = 0; i < len; i++)
+         printf("%02x ", value[i]);
+     printf("\n\n");
+-
++        
+     if (!strcmp(DUEROS_CHARACTERISTIC_UUID, chr->uuid)) {
+         dueros_socket_send((char *) value, len);
+     }
+ 
++    //chr_write(chr, "1111111111", 10);
+ #else
+-    if (!strcmp(SSID_UUID, chr->uuid)) {
+-        strcpy(wifi_ssid, value);
+-        printf("wifi ssid is  %s\n", wifi_ssid);
+-    }
+-    if (!strcmp(PASSWORD_UUID, chr->uuid)) {
+-        strcpy(wifi_password, value);
+-        printf("wifi pwd is  %s\n", wifi_password);
+-        #if 1
+-        wpa_cli_config_wifi();
+-        save_wifi_config(wifi_ssid, wifi_password);
+-        #else
+-        wpa_supplicant_config_wifi();
+-        #endif
+-    }
++	chr_write(chr, value, len);
++	chr->value[len] = '\0';
++	printf("chr_write_value  %s\n", chr->value);
++        if (!strcmp(SSID_CHAR_UUID, chr->uuid)){
++                strncpy(wifi_ssid, chr->value, len);
++                printf("wifi ssid is  %s\n", wifi_ssid);
++        }
++        if (!strcmp(PASSWORD_CHAR_UUID, chr->uuid)){
++                strncpy(wifi_password, chr->value, len);
++        	printf("wifi pwd is  %s\n", wifi_password);
++	}
++	if (!strcmp(HIDE_CHAR_UUID, chr->uuid)){
++                strncpy(wifi_hide, chr->value, len);
++                printf("wifi hide is  %s\n", wifi_hide);                            
++        }
++		
++	if (!strcmp(SECURITY_CHAR_UUID, chr->uuid)){
++                strncpy(wifi_security, chr->value, len);
++                printf("wifi sec is  %s\n", wifi_security);                            
++        }
++		
++	if (!strcmp(CHECKDATA_CHAR_UUID, chr->uuid)){
++                strncpy(check_data, chr->value, len);
++                printf("check_data is  %s\n", check_data);
++        	#if 0
++        	wpa_cli_config_wifi();
++        	save_wifi_config(wifi_ssid, wifi_password);
++        	#else
++        	wifi_config_thread_create(); 
++        	#endif
++    	}
+ #endif
+ 
+ 	return dbus_message_new_method_return(msg);
+@@ -991,6 +1154,11 @@ static gboolean register_characteristic(const char *chr_uuid,
+ 		chr_iface_destroy(chr);
+ 		return FALSE;
+ 	}
++ 
++       if (strcmp(chr_uuid, NOTIFY_CHAR_UUID) == 0) {
++           printf("save temp characteristic\n");
++           temp_chr = chr;
++       }
+ 
+ 	if (!desc_uuid)
+ 		return TRUE;
+@@ -1044,12 +1212,12 @@ static char *register_service(const char *uuid)
+ static void create_wifi_services(void)
+ {
+ 	char *service_path;
+-	uint8_t level = 20;
++	uint8_t level = ' ';
+ 
+ 	service_path = register_service(DUEROS_WIFI_SERVICES_UUID);
+ 	if (!service_path)
+ 		return;
+-
++	
+ 	gboolean mSsidPassword = register_characteristic(DUEROS_CHARACTERISTIC_UUID,
+ 						&level, sizeof(level),
+ 						chr_props,
+@@ -1073,40 +1241,52 @@ static void create_wifi_services(void)
+ static void create_wifi_services(void)
+ {
+ 	char *service_path;
+-	uint8_t level = 20;
++	uint8_t level = ' ';
+ 
+ 	service_path = register_service(WIFI_SERVICES_UUID);
+ 	if (!service_path)
+ 		return;
+-
+-	gboolean mSecure = register_characteristic(SECURITY_UUID,
++		
++	gboolean mSecure = register_characteristic(SECURITY_CHAR_UUID,
+ 						&level, sizeof(level),
+-						chr_props,
++						ias_alert_level_props,
+ 						NULL,
+ 						desc_props,
+ 						service_path);
+-	gboolean mSsid = register_characteristic(SSID_UUID,
++	gboolean mHide = register_characteristic(HIDE_CHAR_UUID,
+ 						&level, sizeof(level),
+-						chr_props,
++						ias_alert_level_props,
+ 						NULL,
+ 						desc_props,
+ 						service_path);
+-	gboolean mPassword = register_characteristic(PASSWORD_UUID,
++	gboolean mSsid = register_characteristic(SSID_CHAR_UUID,
+ 						&level, sizeof(level),
+-						chr_props,
++						ias_alert_level_props,
+ 						NULL,
+ 						desc_props,
+ 						service_path);
+-	gboolean mConfigCharNotify = register_characteristic(CONFIG_NOTIFY_UUID,
++	gboolean mPassword = register_characteristic(PASSWORD_CHAR_UUID,
++						&level, sizeof(level),
++						ias_alert_level_props,
++						NULL,
++						desc_props,
++						service_path);
++    	gboolean mCheckdata = register_characteristic(CHECKDATA_CHAR_UUID,
++						&level, sizeof(level),
++						ias_alert_level_props,
++						NULL,
++						desc_props,
++						service_path);
++	gboolean mConfigCharNotify = register_characteristic(NOTIFY_CHAR_UUID,
+ 						&level, sizeof(level),
+ 						chr_props,
+-						CONFIG_UUID,
++						NULL,
+ 						desc_props,
+ 						service_path);
+ 
+-	/* Add Wifi Config Characteristic to Immediate Wifi Config Service */
+-	if (!mSecure || !mSsid || !mPassword || !mConfigCharNotify) {
+-		printf("Couldn't register Wifi Config characteristic (IAS)\n");
++	/* Add Alert Level Characteristic to Immediate Alert Service */
++	if (!mSecure || !mHide || !mSsid || !mPassword || !mCheckdata || !mConfigCharNotify) {
++		printf("Couldn't register Alert Level characteristic (IAS)\n");
+ 		g_dbus_unregister_interface(connection, service_path,
+ 							GATT_SERVICE_IFACE);
+ 		g_free(service_path);
+@@ -1116,37 +1296,53 @@ static void create_wifi_services(void)
+ 	services = g_slist_prepend(services, service_path);
+ 	printf("Registered service: %s\n", service_path);
+ }
++
+ #endif
+ 
+ static void send_advertise(){
+         printf("send_advertise\n");
+         char buff[256] = {0};
+         char addr[6];
+-        char CMD_RA[256] = "hcitool -i hci0 cmd 0x08 0x0005 ";
++        char CMD_RA[256] = "hcitool -i hci0 cmd 0x08 0x0005";
++        char CMD_ADV_DATA[256] = "hcitool -i hci0 cmd 0x08 0x0008 ";
+         char temp[256];
+-
++        int len = 21;               //3 + 18            flag+uuid
++        
+         //creat random address
+         int i;
+         srand(time(NULL));
+         for(i = 0; i < 6;i++)
+-                addr[i]=rand()&0xFF;
+-
++               addr[i]=rand()&0xFF;
+         addr[0] &= 0x3f;	/* Clear two most significant bits */
+-	    addr[0] |= 0x40;	/* Set second most significant bit */
+-
++	addr[0] |= 0x40;	/* Set second most significant bit */
+         for(i = 0; i < 6;i++) {
+               sprintf(temp,"%02x", addr[i]);
+-              strcat(CMD_RA, temp);
+-              strcat(CMD_RA, " ");
++              strcat(CMD_RA, " "); 
++              strcat(CMD_RA, temp);        
+         }
+-        printf ("%s\n", CMD_RA);
++         printf ("%s\n", CMD_RA);       
+ 
+         //LE Set Random Address Command
+         execute(CMD_RA, buff);
+         sleep(1);
+-
++        
+         // LE Set Advertising Data Command
+-        execute(CMD_ADV, buff);
++        len = len + strlen(BT_NAME) +2;
++        sprintf(temp,"%02x", len);
++        strcat(CMD_ADV_DATA, temp);                                          //add len
++        strcat(CMD_ADV_DATA, " 02 01 06 11 07 ");                            //add flag
++        strcat(CMD_ADV_DATA, SERVICES_UUID);                                 //add uuid
++        sprintf(temp,"%02x", strlen(BT_NAME) + 1);
++        strcat(CMD_ADV_DATA, " ");
++        strcat(CMD_ADV_DATA, temp);
++        strcat(CMD_ADV_DATA, " 09");
++        for (i = 0; i < strlen(BT_NAME); i++) {
++                strcat(CMD_ADV_DATA, " ");
++                sprintf(temp,"%02x", BT_NAME[i]);
++                strcat(CMD_ADV_DATA, temp);
++        }
++    
++        execute(CMD_ADV_DATA, buff);
+         sleep(1);
+ 
+         // LE Set Advertise Enable Command
+-- 
+2.7.4
+

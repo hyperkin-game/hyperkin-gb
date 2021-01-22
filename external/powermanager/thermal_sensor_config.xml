@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--  Thermal Management Configuration File -->
+<!--  Intel Corporation 2011-2014  -->
+<thermalconfig>
+  <!-- Config xml file version should be in sync with iTUX version number-->
+  <ConfigFileVersion>1.0</ConfigFileVersion>
+  <!--Platform Parameters-->
+  <PlatformInfo>
+      <!--PlatformName reference. In future, will be compared against ro.board.platform-->
+      <PlatformName>PX3SE</PlatformName>
+      <!--standard sensor devices register as /sys/class/thermal/thermal_zoneX. Herein
+      referred as 'Path Enumerated at Runtime by Framework in Kernel Thermal' or PERFKT-->
+  </PlatformInfo>
+
+  <!-- sensor information -->
+  <!-- cpu -->
+  <Sensor>
+      <SensorName>coretemp0</SensorName>
+      <SensorPath>/sys/devices/2005a000.i2c/i2c-2/2-0070</SensorPath>
+      <InputTemp>temp1_input</InputTemp>
+      <HighTemp>temp1_max</HighTemp>
+      <LowTemp>temp1_min</LowTemp>
+      <UEventDevPath>/i2c@2005a000/temperature@70</UEventDevPath>
+  </Sensor>
+
+<Profile>
+  <Name>Performance</Name>
+  <Zone>
+        <ZoneID>0</ZoneID>
+        <ZoneName>core 0</ZoneName>
+        <ZoneThreshold>
+            <ZoneThresholdPositionOne>80000</ZoneThresholdPositionOne>
+            <ZoneThresholdPositionTwo>85000</ZoneThresholdPositionTwo>
+            <ZoneThresholdPositionThree>90000</ZoneThresholdPositionThree>
+            <ZoneThresholdPositionFour>95000</ZoneThresholdPositionFour>
+            <ZoneThresholdPositionFive>100000</ZoneThresholdPositionFive>
+            <ZoneThresholdPositionSix>110000</ZoneThresholdPositionSix>
+	    <ZoneThresholdPositionSeven>110000</ZoneThresholdPositionSeven>
+	    <ZoneThresholdPositionEight>110000</ZoneThresholdPositionEight>
+	    <ZoneThresholdPositionNine>110000</ZoneThresholdPositionNine>
+	    <ZoneThresholdPositionTen>110000</ZoneThresholdPositionTen>
+        </ZoneThreshold>
+        <SensorAttrib>
+            <SensorName>coretemp0</SensorName>
+        </SensorAttrib>
+  </Zone>
+</Profile>
+</thermalconfig>

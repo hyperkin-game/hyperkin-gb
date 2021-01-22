@@ -1,0 +1,6 @@
+    {
+        "app_name": "music",
+        "app_icon": "icon_music.png",
+        "app_file": "musicPlayer",
+	"i18n":"i18n.ini"
+    }

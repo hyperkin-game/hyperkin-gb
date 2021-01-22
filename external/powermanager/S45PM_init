@@ -1,0 +1,20 @@
+#!/bin/sh
+
+case "$1" in
+	start)
+                # power manager
+		printf "start power manager service..."
+                /usr/bin/power_manager_service &
+
+		;;
+	stop)
+		;;
+	restart|reload)
+		$0 stop
+		$0 start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+esac
+exit 0

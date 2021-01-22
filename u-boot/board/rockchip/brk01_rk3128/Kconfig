@@ -1,0 +1,15 @@
+if TARGET_BRK01_RK3128
+
+config SYS_BOARD
+	default "brk01_rk3128"
+
+config SYS_VENDOR
+	default "rockchip"
+
+config SYS_CONFIG_NAME
+	default "brk01_rk3128"
+
+config BOARD_SPECIFIC_OPTIONS # dummy
+	def_bool y
+
+endif

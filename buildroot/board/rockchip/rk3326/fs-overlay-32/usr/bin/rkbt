@@ -1,0 +1,16 @@
+#!/bin/sh
+
+echo 1 > /sys/class/rfkill/rfkill0/state
+brcm_patchram_plus -d --enable_hci --no2bytes --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram $1 $2 &
+sleep 5
+
+# Hack, only for AP6210
+echo 1 > /sys/class/rfkill/rfkill0/state
+while ! hciconfig hci0 2>/dev/null; do sleep .5;done
+
+/usr/libexec/bluetooth/bluetoothd --compat -n &
+sdptool add A2SNK
+hciconfig hci0 up
+hciconfig hci0 piscan
+
+pulseaudio --start -D --disallow-exit

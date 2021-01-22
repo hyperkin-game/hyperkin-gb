@@ -1,0 +1,289 @@
+diff --git a/fftools/ffplay.c b/fftools/ffplay.c
+index 344445e..7b30af9 100644
+--- a/fftools/ffplay.c
++++ b/fftools/ffplay.c
+@@ -310,7 +310,7 @@ typedef struct VideoState {
+     SDL_cond *continue_read_thread;
+ } VideoState;
+ 
+-#define MESSAGE_MAX_LEN 512
++#define MESSAGE_MAX_LEN 1024
+ #define MESSAGE_SEPATATOR "="
+ // state
+ #define STATE       "state"
+@@ -338,6 +338,7 @@ typedef struct VideoState {
+ typedef struct Message {
+     char *msg;
+     int len;
++    int important;
+     struct Message* next;
+ } Message;
+ 
+@@ -357,6 +358,7 @@ typedef struct {
+     IPCMessageQueue send_queue;
+     SDL_mutex *mutex;
+     char cur_state[64];
++    int req_quit;
+ } IPCState;
+ 
+ static IPCState ipc_state;
+@@ -384,6 +386,7 @@ static Message* alloc_ipc_message(char *key, char *value) {
+     snprintf(str, len, "%s%s%s", key, MESSAGE_SEPATATOR, value);
+     ret->msg = str;
+     ret->len = len;
++    ret->important = 0;
+     ret->next = NULL;
+ 
+     return ret;
+@@ -449,6 +452,16 @@ static void push_ipc_message(IPCState *ipcs, Message* m) {
+     SDL_UnlockMutex(queue->mutex);
+ }
+ 
++static int no_ipc_message(IPCState *ipcs) {
++    int ret = 0;
++    IPCMessageQueue *queue = &ipcs->send_queue;
++    SDL_LockMutex(queue->mutex);
++    if (!queue->first)
++        ret = 1;
++    SDL_UnlockMutex(queue->mutex);
++    return ret;
++}
++
+ static Message* pop_ipc_message(IPCState *ipcs) {
+     Message* first;
+     IPCMessageQueue *queue = &ipcs->send_queue;
+@@ -473,6 +486,7 @@ static int push_ipc_state_message(IPCState *ipcs, const char* state) {
+     int ret;
+ 
+     SDL_LockMutex(ipcs->mutex);
++    // printf("ffplay curstate: %s, try state: %s\n", ipcs->cur_state, state);
+     ret = strcmp(ipcs->cur_state, state);
+     snprintf(ipcs->cur_state, sizeof(ipcs->cur_state), "%s", state);
+     SDL_UnlockMutex(ipcs->mutex);
+@@ -482,6 +496,7 @@ static int push_ipc_state_message(IPCState *ipcs, const char* state) {
+     if (!m)
+         return -1;
+ 
++    m->important = 1;
+     push_ipc_message(ipcs, m);
+     return 0;
+ }
+@@ -1607,9 +1622,13 @@ static void do_exit(VideoState *is)
+     avformat_network_deinit();
+     if (show_status)
+         printf("\n");
++    av_log(NULL, AV_LOG_FATAL, "before sdl quit()\n");
+     SDL_Quit();
++    av_log(NULL, AV_LOG_FATAL, "after sdl quit()\n");
+     deinit_ipc(&ipc_state);
+-    av_log(NULL, AV_LOG_QUIET, "%s", "");
++    av_log(NULL, AV_LOG_FATAL, "%s", "");
++    fflush(stdout);
++    fflush(stderr);
+     exit(0);
+ }
+ 
+@@ -3079,6 +3098,7 @@ static int read_thread(void *arg)
+     SDL_mutex *wait_mutex = SDL_CreateMutex();
+     int scan_all_pmts_set = 0;
+     int64_t pkt_ts;
++    int reach_end = 0;
+ 
+     if (!wait_mutex) {
+         av_log(NULL, AV_LOG_FATAL, "SDL_CreateMutex(): %s\n", SDL_GetError());
+@@ -3332,7 +3352,14 @@ static int read_thread(void *arg)
+         if (!is->paused &&
+             (!is->audio_st || (is->auddec.finished == is->audioq.serial && frame_queue_nb_remaining(&is->sampq) == 0)) &&
+             (!is->video_st || (is->viddec.finished == is->videoq.serial && frame_queue_nb_remaining(&is->pictq) == 0))) {
+-            push_ipc_state_message(&ipc_state, END);
++            if (!reach_end)
++                reach_end = 1;
++            if (loop != 1 && (!loop || --loop))
++                reach_end = 0;
++            if (reach_end == 1) {
++                push_ipc_state_message(&ipc_state, END);
++                reach_end = 2;
++            }
+             if (loop != 1 && (!loop || --loop)) {
+                 stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
+             } else if (autoexit) {
+@@ -4054,6 +4081,7 @@ static void handle_remote_ipc_message(IPCState *ipcs, char *key, char *value) {
+         if (!strcmp(value, STATE)) {
+             SDL_LockMutex(ipcs->mutex);
+             response_msg = alloc_ipc_message((char*)STATE, ipcs->cur_state);
++            response_msg->important = 1;
+             SDL_UnlockMutex(ipcs->mutex);
+         } else if (!strcmp(value, DURATION)) {
+             char str[16];
+@@ -4082,6 +4110,8 @@ static void handle_remote_ipc_message(IPCState *ipcs, char *key, char *value) {
+                 toggle_pause(is);
+         } if (!strcmp(value, QUIT)) {
+             SDL_Event event;
++
++            ipcs->req_quit = 1;
+             event.type = FF_QUIT_EVENT;
+             event.user.data1 = is;
+             SDL_PushEvent(&event);
+@@ -4141,8 +4171,8 @@ static int ipc_recv_thread(void *arg) {
+     int fd = ipcs->socket_fd;
+ 
+     while (!ipcs->quit) {
+-        char *str;
+         int recv_len;
++        int str_offset;
+ 
+         struct pollfd fds;
+         int p_ret;
+@@ -4152,28 +4182,54 @@ static int ipc_recv_thread(void *arg) {
+         fds.revents = 0;
+ 
+         p_ret = poll(&fds, 1, 100);
+-        if (p_ret < 0 || !(fds.revents & POLLIN))
++        if (p_ret < 0 || !(fds.revents & POLLIN)) {
++            // printf("ffplay p_ret: %d, fds.revents: %d\n", p_ret, fds.revents);
+             continue;
++        }
+ 
+         recv_len = recv(fd, buf, sizeof(buf), 0);
+         if (recv_len <= 0) {
+-            av_log(NULL, AV_LOG_WARNING, "ffplay Fail to recv message: %s\n",
+-                   strerror(errno));
+-            if (errno != EAGAIN)
++            av_log(NULL, AV_LOG_WARNING,
++                   "ffplay Fail to recv message: %s, ipcs->req_quit: %d, recv_len: %d\n",
++                   strerror(errno), ipcs->req_quit, recv_len);
++            if (recv_len == 0 && ipcs->req_quit)
++                break;
++            if (errno != EAGAIN && errno != 0) {
++                push_ipc_state_message(ipcs, ERROR);
+                 ipcs->quit = -1;
++            }
+             continue;
+         }
+ 
+-        str = strstr(buf, MESSAGE_SEPATATOR);
+-        if (buf[recv_len - 1] != 0 || !str) {
+-            av_log(NULL, AV_LOG_ERROR, "Remote Message is broken <%s>?\n",
+-                   buf);
+-            continue;
++        if (buf[recv_len - 1] != 0) {
++            int i = 0;
++            buf[recv_len - 1] = 0;
++            printf("ffplay Warning : Remote Message may be truncated, ");
++            while (i < recv_len)
++                printf("%c", buf[i++]);
++            printf("\n");
++        }
++
++        str_offset = 0;
++        // printf("ffplay recv_len<%d bytes>\n", recv_len);
++        while (str_offset < recv_len) {
++            char *str;
++            char *start = buf + str_offset;
++            int str_len = strlen(start) + 1;
++            str_offset += str_len;
++            str = strstr(start, MESSAGE_SEPATATOR);
++            if (!str) {
++                av_log(NULL, AV_LOG_ERROR, "Remote Message is broken <%s>?\n",
++                       start);
++                break;
++            }
++            *str = 0;
++            // printf("ffplay recv<%d bytes>: %s %s\n", str_len, start, str + 1);
++            handle_remote_ipc_message(ipcs, start, str + 1);
+         }
+-        *str = 0;
+-        handle_remote_ipc_message(ipcs, buf, str + 1);
+     }
+ 
++    printf("exit ffplay: %s\n", __FUNCTION__);
+     return 0;
+ }
+ 
+@@ -4205,20 +4261,30 @@ static int ipc_main_thread(void *arg) {
+     ipcs->socket_fd = fd;
+ 
+     while (1) {
++        char *send_str;
+         int send_len;
+         int64_t now = av_gettime_relative();
+         Message *m = pop_ipc_message(ipcs);
+ 
+-        if (pretime > 0 && now - pretime > 500000) {
++        if (pretime > 0 && now - pretime > 500000 && !ipcs->quit) {
+             push_ipc_curtime_message(ipcs);
+             pretime = now;
+         }
+-        if (ipcs->quit)
+-            break;
++        if (ipcs->quit) {
++            if (!m && no_ipc_message(ipcs)) {
++                printf("ffplay break %s\n", __FUNCTION__);
++                break;
++            }
++            if (!m->important) {
++                free_ipc_message(m);
++                continue;
++            }
++        }
+ 
+         if (!m) {
+             continue;
+         }
++        send_str = m->msg;
+         send_len = m->len;
+         if (!recv_tid && send_len > 0 && !strcmp(m->msg, MESSAGE_STATE_READY)) {
+             // Handle remote message after av is ready.
+@@ -4228,13 +4294,15 @@ static int ipc_main_thread(void *arg) {
+                        SDL_GetError());
+                 ret = -1;
+                 free_ipc_message(m);
++                push_ipc_state_message(ipcs, ERROR);
+                 ipcs->quit = -1;
+                 goto out;
+             }
+             pretime = av_gettime_relative();
+         }
+         while (send_len > 0) {
+-            ret = send(fd, m->msg, m->len, 0);
++            // printf("ffplay send : %s\n", m->msg);
++            ret = send(fd, send_str, send_len, 0);
+             if (ret < 0) {
+                 av_log(NULL, AV_LOG_ERROR, "ffplay Fail to send msg<%s>: %s\n",
+                        m->msg, strerror(errno));
+@@ -4243,6 +4311,7 @@ static int ipc_main_thread(void *arg) {
+                 break;
+             }
+             send_len -= ret;
++            send_str += ret;
+         }
+         free_ipc_message(m);
+     }
+@@ -4258,7 +4327,7 @@ out:
+     if (ipcs->quit < 0) {
+         exit(-1);
+     }
+-
++    printf("exit ffplay: %s\n", __FUNCTION__);
+     return ret;
+ }
+ 
+@@ -4268,6 +4337,9 @@ int main(int argc, char **argv)
+     int flags;
+     VideoState *is;
+ 
++    signal(SIGUSR1, SIG_IGN);
++    signal(SIGUSR2, SIG_IGN);
++
+     init_dynload();
+ 
+     av_log_set_flags(AV_LOG_SKIP_REPEATED);
+@@ -4292,8 +4364,6 @@ int main(int argc, char **argv)
+ 
+     signal(SIGINT , sigterm_handler); /* Interrupt (ANSI).    */
+     signal(SIGTERM, sigterm_handler); /* Termination (ANSI).  */
+-    signal(SIGUSR1, SIG_IGN);
+-    signal(SIGUSR2, SIG_IGN);
+ 
+     show_banner(argc, argv, options);
+ 

@@ -1,0 +1,101 @@
+From 2e88746fb3fb243e80ee7cc0372ed9ba1238a997 Mon Sep 17 00:00:00 2001
+From: Hans Yang <yhx@rock-chips.com>
+Date: Wed, 9 Jan 2019 17:46:38 +0800
+Subject: [PATCH 1/1] exit if ipc socket is broken
+
+---
+ fftools/ffplay.c | 24 +++++++++++++++++-------
+ 1 file changed, 17 insertions(+), 7 deletions(-)
+
+diff --git a/fftools/ffplay.c b/fftools/ffplay.c
+index 4ccc7b5..f67e671 100644
+--- a/fftools/ffplay.c
++++ b/fftools/ffplay.c
+@@ -351,7 +351,7 @@ typedef struct {
+ 
+ typedef struct {
+     SDL_Thread *ipc_tid;
+-    int quit;
++    int quit; // -1 means error
+     int socket_fd;
+     VideoState *is;
+     IPCMessageQueue send_queue;
+@@ -4158,8 +4158,10 @@ static int ipc_recv_thread(void *arg) {
+ 
+         recv_len = recv(fd, buf, sizeof(buf), 0);
+         if (recv_len <= 0) {
+-            av_log(NULL, AV_LOG_WARNING, "Fail to recv message: %s\n",
++            av_log(NULL, AV_LOG_WARNING, "ffplay Fail to recv message: %s\n",
+                    strerror(errno));
++            if (errno != EAGAIN)
++                ipcs->quit = -1;
+             continue;
+         }
+ 
+@@ -4186,8 +4188,9 @@ static int ipc_main_thread(void *arg) {
+ 
+     fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+     if (fd < 0) {
+-        av_log(NULL, AV_LOG_FATAL, "Fail to create socket: %s\n", strerror(errno));
++        av_log(NULL, AV_LOG_FATAL, "ffplay Fail to create socket: %s\n", strerror(errno));
+         ret = -1;
++        ipcs->quit = -1;
+         goto out;
+     }
+ 
+@@ -4196,7 +4199,8 @@ static int ipc_main_thread(void *arg) {
+     strcpy(address.sun_path, FFPLAY_IPC_SOCK_PATH);
+     ret = connect(fd, (struct sockaddr *)&address, sizeof(address));
+     if (ret < 0) {
+-        av_log(NULL, AV_LOG_FATAL, "Fail to connect socket: %s\n", strerror(errno));
++        av_log(NULL, AV_LOG_FATAL, "ffplay Fail to connect socket: %s\n", strerror(errno));
++        ipcs->quit = -1;
+         goto out;
+     }
+     ipcs->socket_fd = fd;
+@@ -4210,10 +4214,10 @@ static int ipc_main_thread(void *arg) {
+             push_ipc_curtime_message(ipcs);
+             pretime = now;
+         }
++        if (ipcs->quit)
++            break;
+ 
+         if (!m) {
+-            if (ipcs->quit)
+-                break;
+             continue;
+         }
+         send_len = m->len;
+@@ -4225,6 +4229,7 @@ static int ipc_main_thread(void *arg) {
+                        SDL_GetError());
+                 ret = -1;
+                 free_ipc_message(m);
++                ipcs->quit = -1;
+                 goto out;
+             }
+             pretime = av_gettime_relative();
+@@ -4232,8 +4237,10 @@ static int ipc_main_thread(void *arg) {
+         while (send_len > 0) {
+             ret = send(fd, m->msg, m->len, 0);
+             if (ret < 0) {
+-                av_log(NULL, AV_LOG_ERROR, "Fail to send msg<%s>: %s\n",
++                av_log(NULL, AV_LOG_ERROR, "ffplay Fail to send msg<%s>: %s\n",
+                        m->msg, strerror(errno));
++                if (errno != EAGAIN)
++                    ipcs->quit = -1;
+                 break;
+             }
+             send_len -= ret;
+@@ -4249,6 +4256,9 @@ out:
+     if (recv_tid) {
+         SDL_WaitThread(recv_tid, NULL);
+     }
++    if (ipcs->quit < 0) {
++        exit(-1);
++    }
+ 
+     return ret;
+ }
+-- 
+2.7.4
+

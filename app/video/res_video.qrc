@@ -1,0 +1,31 @@
+<RCC>
+    <qresource prefix="/">
+        <file>image/video/video_icon.png</file>
+        <file>image/video/video_open_file.png</file>
+        <file>image/video/btn_next (1).png</file>
+        <file>image/video/btn_next (2).png</file>
+        <file>image/video/btn_next (3).png</file>
+        <file>image/video/btn_next (4).png</file>
+        <file>image/video/btn_pause (1).png</file>
+        <file>image/video/btn_pause (2).png</file>
+        <file>image/video/btn_pause (3).png</file>
+        <file>image/video/btn_pause (4).png</file>
+        <file>image/video/btn_play (1).png</file>
+        <file>image/video/btn_play (2).png</file>
+        <file>image/video/btn_play (3).png</file>
+        <file>image/video/btn_play (4).png</file>
+        <file>image/video/btn_previous (1).png</file>
+        <file>image/video/btn_previous (2).png</file>
+        <file>image/video/btn_previous (3).png</file>
+        <file>image/video/btn_previous (4).png</file>
+        <file>image/video/btn_fullscreen.png</file>
+        <file>image/video/video_refresh.png</file>
+        <file>image/video/btn_normalSize.png</file>
+        <file>image/video/btn_list.png</file>
+        <file>image/video/btn_random.png</file>
+        <file>image/video/btn_single.png</file>
+        <file>image/video/btn_volume_off.png</file>
+        <file>image/video/btn_volume_on.png</file>
+        <file>image/video/btn_play_list.png</file>
+    </qresource>
+</RCC>

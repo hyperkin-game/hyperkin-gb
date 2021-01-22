@@ -1,0 +1,7 @@
+#echo "usb mount start" > /dev/console
+source /etc/check_dumper.sh
+$(KillGame)
+if [ -f /tmp/boot_complete ]; then
+	$(RunGame)
+fi
+echo "usb mount done" > /dev/console

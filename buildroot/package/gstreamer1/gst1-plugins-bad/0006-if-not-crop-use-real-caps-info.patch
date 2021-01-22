@@ -1,0 +1,55 @@
+From af7d856dbf5d1c7c2e0f219e5d1968088d90fe8f Mon Sep 17 00:00:00 2001
+From: "james.lin" <james.lin@rock-chips.com>
+Date: Fri, 13 Apr 2018 11:58:00 +0800
+Subject: [PATCH] if not crop use real caps info
+
+Signed-off-by: james.lin <james.lin@rock-chips.com>
+---
+ sys/kms/gstkmssink.c | 5 +++--
+ sys/kms/gstkmssink.h | 1 +
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+ mode change 100644 => 100755 sys/kms/gstkmssink.c
+ mode change 100644 => 100755 sys/kms/gstkmssink.h
+
+diff --git a/sys/kms/gstkmssink.c b/sys/kms/gstkmssink.c
+old mode 100644
+new mode 100755
+index d73cddd..df9c2e4
+--- a/sys/kms/gstkmssink.c
++++ b/sys/kms/gstkmssink.c
+@@ -868,6 +868,7 @@ gst_kms_sink_set_caps (GstBaseSink * bsink, GstCaps * caps)
+     goto modesetting_failed;
+ 
+   self->vinfo = vinfo;
++  self->rinfo = vinfo;
+ 
+   GST_DEBUG_OBJECT (self, "negotiated caps = %" GST_PTR_FORMAT, caps);
+ 
+@@ -1338,8 +1339,8 @@ retry_set_plane:
+     src.w = crop->width;
+     src.h = crop->height;
+   } else {
+-    src.w = GST_VIDEO_INFO_WIDTH (&self->vinfo);
+-    src.h = GST_VIDEO_INFO_HEIGHT (&self->vinfo);
++    src.w = GST_VIDEO_INFO_WIDTH (&self->rinfo);
++    src.h = GST_VIDEO_INFO_HEIGHT (&self->rinfo);
+   }
+ 
+   kms_get_render_rectangle (self, &result.x, &result.y, &result.w,
+diff --git a/sys/kms/gstkmssink.h b/sys/kms/gstkmssink.h
+old mode 100644
+new mode 100755
+index b79f462..e7cb91f
+--- a/sys/kms/gstkmssink.h
++++ b/sys/kms/gstkmssink.h
+@@ -66,6 +66,7 @@ struct _GstKMSSink {
+   gboolean modesetting_enabled;
+ 
+   GstVideoInfo vinfo;
++  GstVideoInfo rinfo;
+   GstCaps *allowed_caps;
+   GstBufferPool *pool;
+   GstAllocator *allocator;
+-- 
+2.7.4
+
