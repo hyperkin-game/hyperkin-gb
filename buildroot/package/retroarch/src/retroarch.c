@@ -196,7 +196,7 @@ static enum rarch_core_type current_core_type                   = CORE_TYPE_PLAI
 static enum rarch_core_type explicit_current_core_type          = CORE_TYPE_PLAIN;
 static char error_string[255]                                   = {0};
 static char runtime_shader_preset[255]                          = {0};
-
+static char full_name[2048];
 #ifdef HAVE_THREAD_STORAGE
 static sthread_tls_t rarch_tls;
 const void *MAGIC_POINTER                                       = (void*)(uintptr_t)0x0DEFACED;
@@ -1165,7 +1165,7 @@ static void retroarch_parse_input_and_config(int argc, char *argv[])
       else
       {
          /* Allow stray -L arguments to go through to workaround cases
-          * where it's used as "config file".
+          	* where it's used as "config file".
           *
           * This seems to still be the case for Android, which
           * should be properly fixed. */
@@ -1186,7 +1186,10 @@ static void retroarch_parse_input_and_config(int argc, char *argv[])
       retroarch_set_current_core_type(CORE_TYPE_PLAIN, false);
       path_set_special(argv + optind, argc - optind);
    }
-
+	if(argv[optind] != NULL){
+		//printf("optind=%d, data=[%s]\n", optind, (const char*)argv[optind]);
+		strcpy(full_name, (const char*)argv[optind]);
+	}
    /* Copy SRM/state dirs used, so they can be reused on reentrancy. */
    if (retroarch_override_setting_is_set(RARCH_OVERRIDE_SETTING_SAVE_PATH, NULL) &&
          path_is_directory(global->name.savefile))
@@ -2611,7 +2614,23 @@ static enum runloop_state runloop_check_state(
 		memset(ratio_buf, '\0', sizeof(ratio_buf));
 		printf("2:switch old=%d => ratio=%d\n", old_ratio_status, ratio_button);
 		settings_t *settings = config_get_ptr();
-		settings->uints.video_aspect_ratio_idx = ratio_button;
+		if(ratio_button == 0){
+			const char search[250] = ".gba";
+			const char *loc = strstr(full_name, search);
+
+			printf("game_name: %s\n", full_name);
+			if(loc == NULL) {
+				printf("Video_aspect_ratio_idx=  ASPECT_RATIO_10_9\n");
+				settings->uints.video_aspect_ratio_idx = ASPECT_RATIO_10_9;
+			}
+			else{
+				printf("Rom Include .gba\n");
+				printf("Video_aspect_ratio_idx=  ASPECT_RATIO_3_2\n");
+				settings->uints.video_aspect_ratio_idx = ASPECT_RATIO_3_2;
+			}
+		}else{
+			settings->uints.video_aspect_ratio_idx = ASPECT_RATIO_16_9;
+		}
 		video_driver_set_aspect_ratio();
 		old_ratio_status = ratio_button;
 	}

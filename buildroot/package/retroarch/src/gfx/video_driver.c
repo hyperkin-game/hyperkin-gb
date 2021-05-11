@@ -259,7 +259,8 @@ struct aspect_ratio_elem aspectratio_lut[ASPECT_RATIO_END] = {
    { "Config",        0.0f },
    { "Square pixel",  1.0f },
    { "Core provided", 1.0f },
-   { "Custom",        0.0f }
+   { "Custom",        0.0f },
+   { "10:9",          1.1111f }
 };
 
 static const video_driver_t *video_drivers[] = {
