@@ -3,9 +3,10 @@
 # GPSP
 #
 ################################################################################
-LIBRETRO_GPSP_VERSION = d99f3ac9f1da201b6a0a3f90739503644dce1645
+LIBRETRO_GPSP_VERSION = ff48af07b08c0870ea950335fec338a828f88c27
 LIBRETRO_GPSP_SITE = $(call github,libretro,gpsp,$(LIBRETRO_GPSP_VERSION))
-
+LIBRETRO_GPSP_SITE = $(TOPDIR)/package/libretro-gpsp/src
+LIBRETRO_GPSP_SITE_METHOD = local
 define LIBRETRO_GPSP_BUILD_CMDS
 	CFLAGS="$(TARGET_CFLAGS)" CXXFLAGS="$(TARGET_CXXFLAGS)" \
 	       LDFLAGS="$(TARGET_LDFLAGS)" \
