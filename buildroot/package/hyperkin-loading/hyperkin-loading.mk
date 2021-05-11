@@ -16,9 +16,19 @@ define HYPERKIN_LOADING_BUILD_CMDS
 	$(TARGET_MAKE_ENV) $(HYPERKIN_LOADING_MAKE) -C $(@D) $(HYPERKIN_LOADING_MAKE_OPTS)
 endef
 
+ifeq ($(BR2_PACKAGE_LIBUSB),y)
+LIBPCAP_DEPENDENCIES += libusb
+LIBPCAP_CFLAGS += "-I$(STAGING_DIR)/usr/include/libusb-1.0"
+LIBPCAP_CONF_OPTS += --with-libusb=$(STAGING_DIR)/usr
+else
+LIBPCAP_CONF_OPTS += --without-libusb
+endif
+
+
 define HYPERKIN_LOADING_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/hyperkin-loading $(TARGET_DIR)/usr/bin
 	$(INSTALL) -D -m 0755 $(@D)/hyperkin-crc $(TARGET_DIR)/usr/bin
+
 #	$(STRIP) $(TARGET_DIR)/usr/bin/hyperkin-loading
 	cp $(@D)/S50ui $(TARGET_DIR)/etc/init.d
 	cp $(@D)/01_try_launch_retroarch $(TARGET_DIR)/etc/usbmount/mount.d/
