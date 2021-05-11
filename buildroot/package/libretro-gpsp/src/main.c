@@ -114,9 +114,8 @@ void init_main(void)
   video_count = 960;
 
 #ifdef HAVE_DYNAREC
-  flush_translation_cache_rom();
-  flush_translation_cache_ram();
-  flush_translation_cache_bios();
+  init_caches();
+  init_emitter();
 #endif
 }
 
@@ -132,6 +131,7 @@ u32 update_gba(void)
     cpu_ticks += execute_cycles;
 
     reg[CHANGED_PC_STATUS] = 0;
+    reg[COMPLETED_FRAME] = 0;
 
     if(gbc_sound_update)
     {
@@ -158,7 +158,7 @@ u32 update_gba(void)
         if((dispstat & 0x01) == 0)
         {
           u32 i;
-          if(oam_update)
+          if(reg[OAM_UPDATED])
             oam_update_count++;
 
           if(no_alpha)
@@ -227,14 +227,16 @@ u32 update_gba(void)
           oam_update_count = 0;
           flush_ram_count = 0;
 
-          switch_to_main_thread();
-
           update_gbc_sound(cpu_ticks);
           gbc_sound_update = 0;
 
-          process_cheats();
+          /* If there's no cheat hook, run on vblank! */
+          if (cheat_master_hook == ~0U)
+             process_cheats();
 
           vcount = 0;
+          // We completed a frame, tell the dynarec to exit to the main thread
+          reg[COMPLETED_FRAME] = 1;
         }
 
         if(vcount == (dispstat >> 8))
@@ -267,7 +269,7 @@ u32 update_gba(void)
        if(timer[i].count < execute_cycles)
           execute_cycles = timer[i].count;
     }
-  } while(reg[CPU_HALT_STATE] != CPU_ACTIVE);
+  } while(reg[CPU_HALT_STATE] != CPU_ACTIVE && !reg[COMPLETED_FRAME]);
 
   return execute_cycles;
 }
@@ -280,13 +282,8 @@ void reset_gba(void)
   reset_sound();
 }
 
-u32 file_length(const char *dummy, FILE *fp)
+u32 file_length(FILE *fp)
 {
-#ifdef PSP_BUILD
-  SceIoStat stats;
-  sceIoGetstat(filename, &stats);
-  return stats.st_size;
-#else
   u32 length;
 
   fseek(fp, 0, SEEK_END);
@@ -294,7 +291,6 @@ u32 file_length(const char *dummy, FILE *fp)
   fseek(fp, 0, SEEK_SET);
 
   return length;
-#endif
 }
 
 void change_ext(const char *src, char *buffer, const char *extension)

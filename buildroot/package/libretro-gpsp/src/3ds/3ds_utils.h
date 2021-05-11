@@ -7,6 +7,9 @@ void ctr_flush_invalidate_cache(void);
 
 extern __attribute((weak)) unsigned int __ctr_svchax;
 
+void check_rosalina();
+void ctr_clear_cache(void);
+
 void wait_for_input();
 #define DEBUG_HOLD() do{printf("%s@%s:%d.\n",__FUNCTION__, __FILE__, __LINE__);fflush(stdout);wait_for_input();}while(0)
 #define DEBUG_VAR(X) printf( "%-20s: 0x%08X\n", #X, (u32)(X))

@@ -20,6 +20,8 @@
 #ifndef MAIN_H
 #define MAIN_H
 
+#include <stdio.h>
+
 typedef enum
 {
   TIMER_INACTIVE,
@@ -54,9 +56,31 @@ typedef struct
   timer_status_type status;
 } timer_type;
 
+typedef enum
+{
+  no_frameskip = 0,
+  auto_frameskip,
+  auto_threshold_frameskip,
+  fixed_interval_frameskip
+} frameskip_type;
+
+typedef enum
+{
+  auto_detect = 0,
+  builtin_bios,
+  official_bios
+} bios_type;
+
+typedef enum
+{
+  boot_game = 0,
+  boot_bios
+} boot_mode;
+
 extern u32 cpu_ticks;
 extern u32 execute_cycles;
 extern u32 global_cycles_per_instruction;
+extern u32 skip_next_frame;
 
 extern u32 cycle_memory_access;
 extern u32 cycle_pc_relative_access;
@@ -83,17 +107,11 @@ void main_write_savestate(void);
 void main_read_savestate(void);
 
 
-#ifdef PSP_BUILD
-u32 file_length(char *filename, s32 dummy);
-#else
-u32 file_length(const char *dummy, FILE *fp);
-#endif
+u32 file_length(FILE *fp);
 
-extern u32 real_frame_count;
-extern u32 virtual_frame_count;
-extern u32 max_frameskip;
 extern u32 num_skipped_frames;
 extern int dynarec_enable;
+extern boot_mode selected_boot_mode;
 
 void change_ext(const char *src, char *buffer, const char *extension);
 

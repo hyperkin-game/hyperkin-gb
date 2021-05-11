@@ -1003,7 +1003,6 @@ const u32 psr_masks[16] =
 
 #define fast_write_memory(size, type, address, value)                         \
 {                                                                             \
-  u8 *map;                                                                    \
   u32 _address = (address) & ~(aligned_address_mask##size & 0x03);            \
   if(_address < 0x10000000)                                                   \
   {                                                                           \
@@ -1011,17 +1010,9 @@ const u32 psr_masks[16] =
     memory_writes_##type++;                                                   \
   }                                                                           \
                                                                               \
-  if(((_address & aligned_address_mask##size) == 0) &&                        \
-   (map = memory_map_write[_address >> 15]))                                  \
-  {                                                                           \
-    *((type *)((u8 *)map + (_address & 0x7FFF))) = value;                     \
-  }                                                                           \
-  else                                                                        \
-  {                                                                           \
-    cpu_alert = write_memory##size(_address, value);                          \
-    if(cpu_alert)                                                             \
-      goto alert;                                                             \
-  }                                                                           \
+  cpu_alert = write_memory##size(_address, value);                            \
+  if(cpu_alert)                                                               \
+    goto alert;                                                               \
 }                                                                             \
 
 #define load_aligned32(address, dest)                                         \
@@ -1033,7 +1024,7 @@ const u32 psr_masks[16] =
     memory_region_access_read_u32[_address >> 24]++;                          \
     memory_reads_u32++;                                                       \
   }                                                                           \
-  if(map)                                                                     \
+  if(_address < 0x10000000 && map)                                            \
   {                                                                           \
     dest = address32(map, _address & 0x7FFF);                                 \
   }                                                                           \
@@ -1046,22 +1037,14 @@ const u32 psr_masks[16] =
 #define store_aligned32(address, value)                                       \
 {                                                                             \
   u32 _address = address;                                                     \
-  u8 *map = memory_map_write[_address >> 15];                                 \
   if(_address < 0x10000000)                                                   \
   {                                                                           \
     memory_region_access_write_u32[_address >> 24]++;                         \
     memory_writes_u32++;                                                      \
   }                                                                           \
-  if(map)                                                                     \
-  {                                                                           \
-    address32(map, _address & 0x7FFF) = value;                                \
-  }                                                                           \
-  else                                                                        \
-  {                                                                           \
-    cpu_alert = write_memory32(_address, value);                              \
-    if(cpu_alert)                                                             \
-      goto alert;                                                             \
-  }                                                                           \
+  cpu_alert = write_memory32(_address, value);                                \
+  if(cpu_alert)                                                               \
+    goto alert;                                                               \
 }                                                                             \
 
 #define load_memory_u8(address, dest)                                         \
@@ -1544,8 +1527,6 @@ const u32 psr_masks[16] =
 // reg_mode[new_mode][6]. When swapping to/from FIQ retire/load reg[8]
 // through reg[14] to/from reg_mode[MODE_FIQ][0] through reg_mode[MODE_FIQ][6].
 
-u32 reg_mode[7][7];
-
 u32 cpu_modes[32] =
 {
   MODE_INVALID, MODE_INVALID, MODE_INVALID, MODE_INVALID, MODE_INVALID,
@@ -1562,9 +1543,11 @@ u32 cpu_modes_cpsr[7] = { 0x10, 0x11, 0x12, 0x13, 0x17, 0x1B, 0x1F };
 // When switching modes set spsr[new_mode] to cpsr. Modifying PC as the
 // target of a data proc instruction will set cpsr to spsr[cpu_mode].
 
-u32 initial_reg[64];
-u32 *reg = initial_reg;
+#ifndef HAVE_DYNAREC
+u32 reg[64];
 u32 spsr[6];
+u32 reg_mode[7][7];
+#endif
 
 // ARM/Thumb mode is stored in the flags directly, this is simpler than
 // shadowing it since it has a constant 1bit represenation.
@@ -1639,8 +1622,6 @@ void raise_interrupt(irq_type irq_raised)
     reg[REG_CPSR] = 0xD2;
     reg[REG_PC] = 0x00000018;
 
-    bios_region_read_allow();
-
     set_cpu_mode(MODE_IRQ);
     reg[CPU_HALT_STATE] = CPU_ACTIVE;
     reg[CHANGED_PC_STATUS] = 1;
@@ -1649,7 +1630,9 @@ void raise_interrupt(irq_type irq_raised)
 
 #ifndef HAVE_DYNAREC
 u8 *memory_map_read [8 * 1024];
-u8 *memory_map_write[8 * 1024];
+u16 oam_ram[512];
+u16 palette_ram[512];
+u16 palette_ram_converted[512];
 #endif
 
 void execute_arm(u32 cycles)
@@ -1672,9 +1655,17 @@ void execute_arm(u32 cycles)
   if(!pc_address_block)
     pc_address_block = load_gamepak_page(pc_region & 0x3FF);
 
+  cycles_remaining = cycles;
   while(1)
   {
-    cycles_remaining = cycles;
+    /* Do not execute until CPU is active */
+    while(reg[CPU_HALT_STATE] != CPU_ACTIVE) {
+       cycles_remaining = update_gba();
+
+       if (reg[COMPLETED_FRAME])
+          return;
+    }
+
     pc = reg[REG_PC];
     extract_flags();
 
@@ -1687,6 +1678,10 @@ arm_loop:
 
        collapse_flags();
        cycles_per_instruction = global_cycles_per_instruction;
+
+       /* Process cheats if we are about to execute the cheat hook */
+       if (pc == cheat_master_hook)
+          process_cheats();
 
        old_pc = pc;
 
@@ -1719,1571 +1714,1526 @@ arm_loop:
              if(c_flag)
                 arm_next_instruction();
              break;
-          case 0x4:                                                                 
-             /* MI       */                                                          
-             if(!n_flag)                                                             
-                arm_next_instruction();                                               
-             break;                                                                  
-
-          case 0x5:                                                                 
-             /* PL       */                                                          
-             if(n_flag)                                                              
-                arm_next_instruction();                                               
-             break;                                                                  
-
-          case 0x6:                                                                 
-             /* VS       */                                                          
-             if(!v_flag)                                                             
-                arm_next_instruction();                                               
-             break;                                                                  
-
-          case 0x7:                                                                 
-             /* VC       */                                                          
-             if(v_flag)                                                              
-                arm_next_instruction();                                               
-             break;                                                                  
-
-          case 0x8:                                                                 
-             /* HI       */                                                          
-             if((c_flag == 0) | z_flag)                                              
-                arm_next_instruction();                                               
-             break;                                                                  
-
-          case 0x9:                                                                 
-             /* LS       */                                                          
-             if(c_flag & (z_flag ^ 1))                                               
-                arm_next_instruction();                                               
-             break;                                                                  
-
-          case 0xA:                                                                 
-             /* GE       */                                                          
-             if(n_flag != v_flag)                                                    
-                arm_next_instruction();                                               
-             break;                                                                  
-
-          case 0xB:                                                                 
-             /* LT       */                                                          
-             if(n_flag == v_flag)                                                    
-                arm_next_instruction();                                               
-             break;                                                                  
-
-          case 0xC:                                                                 
-             /* GT       */                                                          
-             if(z_flag | (n_flag != v_flag))                                         
-                arm_next_instruction();                                               
-             break;                                                                  
-
-          case 0xD:                                                                 
-             /* LE       */                                                          
-             if((z_flag == 0) & (n_flag == v_flag))                                  
-                arm_next_instruction();                                               
-             break;                                                                  
-
-          case 0xE:                                                                 
-             /* AL       */                                                          
-             break;                                                                  
-
-          case 0xF:                                                                 
-             /* Reserved - treat as "never" */                                       
-             arm_next_instruction();                                                 
-             break;                                                                  
-       }                                                                           
-
-       switch((opcode >> 20) & 0xFF)                                               
-       {                                                                           
-          case 0x00:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                if(opcode & 0x20)                                                     
-                {                                                                     
-                   /* STRH rd, [rn], -rm */                                            
-                   arm_access_memory(store, no_op, half_reg, u16, yes, - reg[rm]);     
-                }                                                                     
-                else                                                                  
-                {                                                                     
-                   /* MUL rd, rm, rs */                                                
-                   arm_multiply(no_op, no);                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* AND rd, rn, reg_op */                                              
-                arm_data_proc(reg[rn] & reg_sh, reg);                                 
-             }                                                                       
-             break;                                                                  
-
-          case 0x01:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 0:                                                             
-                      /* MULS rd, rm, rs */                                             
-                      arm_multiply(no_op, yes);                                         
-                      break;                                                            
-
-                   case 1:                                                             
-                      /* LDRH rd, [rn], -rm */                                          
-                      arm_access_memory(load, no_op, half_reg, u16, yes, - reg[rm]);    
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn], -rm */                                         
-                      arm_access_memory(load, no_op, half_reg, s8, yes, - reg[rm]);     
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn], -rm */                                         
-                      arm_access_memory(load, no_op, half_reg, s16, yes, - reg[rm]);    
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* ANDS rd, rn, reg_op */                                             
-                arm_data_proc_logic_flags(reg[rn] & reg_sh, reg);                     
-             }                                                                       
-             break;                                                                  
-
-          case 0x02:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                if(opcode & 0x20)                                                     
-                {                                                                     
-                   /* STRH rd, [rn], -rm */                                            
-                   arm_access_memory(store, no_op, half_reg, u16, yes, - reg[rm]);     
-                }                                                                     
-                else                                                                  
-                {                                                                     
-                   /* MLA rd, rm, rs, rn */                                            
-                   arm_multiply(+ reg[rn], no);                                        
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* EOR rd, rn, reg_op */                                              
-                arm_data_proc(reg[rn] ^ reg_sh, reg);                                 
-             }                                                                       
-             break;                                                                  
-
-          case 0x03:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 0:                                                             
-                      /* MLAS rd, rm, rs, rn */                                         
-                      arm_multiply(+ reg[rn], yes);                                     
-                      break;                                                            
-
-                   case 1:                                                             
-                      /* LDRH rd, [rn], -rm */                                          
-                      arm_access_memory(load, no_op, half_reg, u16, yes, - reg[rm]);    
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn], -rm */                                         
-                      arm_access_memory(load, no_op, half_reg, s8, yes, - reg[rm]);     
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn], -rm */                                         
-                      arm_access_memory(load, no_op, half_reg, s16, yes, - reg[rm]);    
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* EORS rd, rn, reg_op */                                             
-                arm_data_proc_logic_flags(reg[rn] ^ reg_sh, reg);                     
-             }                                                                       
-             break;                                                                  
-
-          case 0x04:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                /* STRH rd, [rn], -imm */                                             
-                arm_access_memory(store, no_op, half_imm, u16, yes, - offset);        
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* SUB rd, rn, reg_op */                                              
-                arm_data_proc(reg[rn] - reg_sh, reg);                                 
-             }                                                                       
-             break;                                                                  
-
-          case 0x05:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 1:                                                             
-                      /* LDRH rd, [rn], -imm */                                         
-                      arm_access_memory(load, no_op, half_imm, u16, yes, - offset);     
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn], -imm */                                        
-                      arm_access_memory(load, no_op, half_imm, s8, yes, - offset);      
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn], -imm */                                        
-                      arm_access_memory(load, no_op, half_imm, s16, yes, - offset);     
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* SUBS rd, rn, reg_op */                                             
-                arm_data_proc_sub_flags(reg[rn], reg_sh, reg);                        
-             }                                                                       
-             break;                                                                  
-
-          case 0x06:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                /* STRH rd, [rn], -imm */                                             
-                arm_access_memory(store, no_op, half_imm, u16, yes, - offset);        
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* RSB rd, rn, reg_op */                                              
-                arm_data_proc(reg_sh - reg[rn], reg);                                 
-             }                                                                       
-             break;                                                                  
-
-          case 0x07:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 1:                                                             
-                      /* LDRH rd, [rn], -imm */                                         
-                      arm_access_memory(load, no_op, half_imm, u16, yes, - offset);     
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn], -imm */                                        
-                      arm_access_memory(load, no_op, half_imm, s8, yes, - offset);      
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn], -imm */                                        
-                      arm_access_memory(load, no_op, half_imm, s16, yes, - offset);     
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* RSBS rd, rn, reg_op */                                             
-                arm_data_proc_sub_flags(reg_sh, reg[rn], reg);                        
-             }                                                                       
-             break;                                                                  
-
-          case 0x08:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                if(opcode & 0x20)                                                     
-                {                                                                     
-                   /* STRH rd, [rn], +rm */                                            
-                   arm_access_memory(store, no_op, half_reg, u16, yes, + reg[rm]);     
-                }                                                                     
-                else                                                                  
-                {                                                                     
-                   /* UMULL rd, rm, rs */                                              
-                   arm_multiply_long(no_op, no, u);                                    
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* ADD rd, rn, reg_op */                                              
-                arm_data_proc(reg[rn] + reg_sh, reg);                                 
-             }                                                                       
-             break;                                                                  
-
-          case 0x09:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 0:                                                             
-                      /* UMULLS rdlo, rdhi, rm, rs */                                   
-                      arm_multiply_long(no_op, yes, u);                                 
-                      break;                                                            
-
-                   case 1:                                                             
-                      /* LDRH rd, [rn], +rm */                                          
-                      arm_access_memory(load, no_op, half_reg, u16, yes, + reg[rm]);    
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn], +rm */                                         
-                      arm_access_memory(load, no_op, half_reg, s8, yes, + reg[rm]);     
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn], +rm */                                         
-                      arm_access_memory(load, no_op, half_reg, s16, yes, + reg[rm]);    
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* ADDS rd, rn, reg_op */                                             
-                arm_data_proc_add_flags(reg[rn], reg_sh, reg);                        
-             }                                                                       
-             break;                                                                  
-
-          case 0x0A:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                if(opcode & 0x20)                                                     
-                {                                                                     
-                   /* STRH rd, [rn], +rm */                                            
-                   arm_access_memory(store, no_op, half_reg, u16, yes, + reg[rm]);     
-                }                                                                     
-                else                                                                  
-                {                                                                     
-                   /* UMLAL rd, rm, rs */                                              
-                   arm_multiply_long(arm_multiply_long_addop(u), no, u);               
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* ADC rd, rn, reg_op */                                              
-                arm_data_proc(reg[rn] + reg_sh + c_flag, reg);                        
-             }                                                                       
-             break;                                                                  
-
-          case 0x0B:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 0:                                                             
-                      /* UMLALS rdlo, rdhi, rm, rs */                                   
-                      arm_multiply_long(arm_multiply_long_addop(u), yes, u);            
-                      break;                                                            
-
-                   case 1:                                                             
-                      /* LDRH rd, [rn], +rm */                                          
-                      arm_access_memory(load, no_op, half_reg, u16, yes, + reg[rm]);    
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn], +rm */                                         
-                      arm_access_memory(load, no_op, half_reg, s8, yes, + reg[rm]);     
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn], +rm */                                         
-                      arm_access_memory(load, no_op, half_reg, s16, yes, + reg[rm]);    
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* ADCS rd, rn, reg_op */                                             
-                arm_data_proc_add_flags(reg[rn], reg_sh + c_flag, reg);               
-             }                                                                       
-             break;                                                                  
-
-          case 0x0C:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                if(opcode & 0x20)                                                     
-                {                                                                     
-                   /* STRH rd, [rn], +imm */                                           
-                   arm_access_memory(store, no_op, half_imm, u16, yes, + offset);      
-                }                                                                     
-                else                                                                  
-                {                                                                     
-                   /* SMULL rd, rm, rs */                                              
-                   arm_multiply_long(no_op, no, s);                                    
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* SBC rd, rn, reg_op */                                              
-                arm_data_proc(reg[rn] - (reg_sh + (c_flag ^ 1)), reg);                
-             }                                                                       
-             break;                                                                  
-
-          case 0x0D:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 0:                                                             
-                      /* SMULLS rdlo, rdhi, rm, rs */                                   
-                      arm_multiply_long(no_op, yes, s);                                 
-                      break;                                                            
-
-                   case 1:                                                             
-                      /* LDRH rd, [rn], +imm */                                         
-                      arm_access_memory(load, no_op, half_imm, u16, yes, + offset);     
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn], +imm */                                        
-                      arm_access_memory(load, no_op, half_imm, s8, yes, + offset);      
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn], +imm */                                        
-                      arm_access_memory(load, no_op, half_imm, s16, yes, + offset);     
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* SBCS rd, rn, reg_op */                                             
-                arm_data_proc_sub_flags(reg[rn], (reg_sh + (c_flag ^ 1)), reg);       
-             }                                                                       
-             break;                                                                  
-
-          case 0x0E:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                if(opcode & 0x20)                                                     
-                {                                                                     
-                   /* STRH rd, [rn], +imm */                                           
-                   arm_access_memory(store, no_op, half_imm, u16, yes, + offset);      
-                }                                                                     
-                else                                                                  
-                {                                                                     
-                   /* SMLAL rd, rm, rs */                                              
-                   arm_multiply_long(arm_multiply_long_addop(s), no, s);               
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* RSC rd, rn, reg_op */                                              
-                arm_data_proc(reg_sh - reg[rn] + c_flag - 1, reg);                    
-             }                                                                       
-             break;                                                                  
-
-          case 0x0F:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 0:                                                             
-                      /* SMLALS rdlo, rdhi, rm, rs */                                   
-                      arm_multiply_long(arm_multiply_long_addop(s), yes, s);            
-                      break;                                                            
-
-                   case 1:                                                             
-                      /* LDRH rd, [rn], +imm */                                         
-                      arm_access_memory(load, no_op, half_imm, u16, yes, + offset);     
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn], +imm */                                        
-                      arm_access_memory(load, no_op, half_imm, s8, yes, + offset);      
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn], +imm */                                        
-                      arm_access_memory(load, no_op, half_imm, s16, yes, + offset);     
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* RSCS rd, rn, reg_op */                                             
-                arm_data_proc_sub_flags((reg_sh + c_flag - 1), reg[rn], reg);         
-             }                                                                       
-             break;                                                                  
-
-          case 0x10:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                if(opcode & 0x20)                                                     
-                {                                                                     
-                   /* STRH rd, [rn - rm] */                                            
-                   arm_access_memory(store, - reg[rm], half_reg, u16, no, no_op);      
-                }                                                                     
-                else                                                                  
-                {                                                                     
-                   /* SWP rd, rm, [rn] */                                              
-                   arm_swap(u32);                                                      
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* MRS rd, cpsr */                                                    
-                arm_psr(reg, read, reg[REG_CPSR]);                                    
-             }                                                                       
-             break;                                                                  
-
-          case 0x11:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 1:                                                             
-                      /* LDRH rd, [rn - rm] */                                          
-                      arm_access_memory(load, - reg[rm], half_reg, u16, no, no_op);     
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn - rm] */                                         
-                      arm_access_memory(load, - reg[rm], half_reg, s8, no, no_op);      
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn - rm] */                                         
-                      arm_access_memory(load, - reg[rm], half_reg, s16, no, no_op);     
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* TST rd, rn, reg_op */                                              
-                arm_data_proc_test_logic(reg[rn] & reg_sh, reg);                      
-             }                                                                       
-             break;                                                                  
-
-          case 0x12:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                /* STRH rd, [rn - rm]! */                                             
-                arm_access_memory(store, - reg[rm], half_reg, u16, yes, no_op);       
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                if(opcode & 0x10)                                                     
-                {                                                                     
-                   /* BX rn */                                                         
-                   arm_decode_branchx(opcode);                                         
-                   u32 src = reg[rn];                                                  
-                   if(src & 0x01)                                                      
-                   {                                                                   
-                      src -= 1;                                                         
-                      arm_pc_offset_update_direct(src);                                 
-                      reg[REG_CPSR] |= 0x20;                                            
-                      goto thumb_loop;                                                  
-                   }                                                                   
-                   else                                                                
-                   {                                                                   
-                      arm_pc_offset_update_direct(src);                                 
-                   }                                                                   
-                }                                                                     
-                else                                                                  
-                {                                                                     
-                   /* MSR cpsr, rm */                                                  
-                   arm_psr(reg, store, cpsr);                                          
-                }                                                                     
-             }                                                                       
-             break;                                                                  
-
-          case 0x13:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 1:                                                             
-                      /* LDRH rd, [rn - rm]! */                                         
-                      arm_access_memory(load, - reg[rm], half_reg, u16, yes, no_op);    
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn - rm]! */                                        
-                      arm_access_memory(load, - reg[rm], half_reg, s8, yes, no_op);     
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn - rm]! */                                        
-                      arm_access_memory(load, - reg[rm], half_reg, s16, yes, no_op);    
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* TEQ rd, rn, reg_op */                                              
-                arm_data_proc_test_logic(reg[rn] ^ reg_sh, reg);                      
-             }                                                                       
-             break;                                                                  
-
-          case 0x14:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                if(opcode & 0x20)                                                     
-                {                                                                     
-                   /* STRH rd, [rn - imm] */                                           
-                   arm_access_memory(store, - offset, half_imm, u16, no, no_op);       
-                }                                                                     
-                else                                                                  
-                {                                                                     
-                   /* SWPB rd, rm, [rn] */                                             
-                   arm_swap(u8);                                                       
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* MRS rd, spsr */                                                    
-                arm_psr(reg, read, spsr[reg[CPU_MODE]]);                              
-             }                                                                       
-             break;                                                                  
-
-          case 0x15:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 1:                                                             
-                      /* LDRH rd, [rn - imm] */                                         
-                      arm_access_memory(load, - offset, half_imm, u16, no, no_op);      
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn - imm] */                                        
-                      arm_access_memory(load, - offset, half_imm, s8, no, no_op);       
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn - imm] */                                        
-                      arm_access_memory(load, - offset, half_imm, s16, no, no_op);      
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* CMP rn, reg_op */                                                  
-                arm_data_proc_test_sub(reg[rn], reg_sh, reg);                         
-             }                                                                       
-             break;                                                                  
-
-          case 0x16:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                /* STRH rd, [rn - imm]! */                                            
-                arm_access_memory(store, - offset, half_imm, u16, yes, no_op);        
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* MSR spsr, rm */                                                    
-                arm_psr(reg, store, spsr);                                            
-             }                                                                       
-             break;                                                                  
-
-          case 0x17:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 1:                                                             
-                      /* LDRH rd, [rn - imm]! */                                        
-                      arm_access_memory(load, - offset, half_imm, u16, yes, no_op);     
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn - imm]! */                                       
-                      arm_access_memory(load, - offset, half_imm, s8, yes, no_op);      
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn - imm]! */                                       
-                      arm_access_memory(load, - offset, half_imm, s16, yes, no_op);     
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* CMN rd, rn, reg_op */                                              
-                arm_data_proc_test_add(reg[rn], reg_sh, reg);                         
-             }                                                                       
-             break;                                                                  
-
-          case 0x18:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                /* STRH rd, [rn + rm] */                                              
-                arm_access_memory(store, + reg[rm], half_reg, u16, no, no_op);        
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* ORR rd, rn, reg_op */                                              
-                arm_data_proc(reg[rn] | reg_sh, reg);                                 
-             }                                                                       
-             break;                                                                  
-
-          case 0x19:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 1:                                                             
-                      /* LDRH rd, [rn + rm] */                                          
-                      arm_access_memory(load, + reg[rm], half_reg, u16, no, no_op);     
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn + rm] */                                         
-                      arm_access_memory(load, + reg[rm], half_reg, s8, no, no_op);      
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn + rm] */                                         
-                      arm_access_memory(load, + reg[rm], half_reg, s16, no, no_op);     
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* ORRS rd, rn, reg_op */                                             
-                arm_data_proc_logic_flags(reg[rn] | reg_sh, reg);                     
-             }                                                                       
-             break;                                                                  
-
-          case 0x1A:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                /* STRH rd, [rn + rm]! */                                             
-                arm_access_memory(store, + reg[rm], half_reg, u16, yes, no_op);       
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* MOV rd, reg_op */                                                  
-                arm_data_proc(reg_sh, reg);                                           
-             }                                                                       
-             break;                                                                  
-
-          case 0x1B:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 1:                                                             
-                      /* LDRH rd, [rn + rm]! */                                         
-                      arm_access_memory(load, + reg[rm], half_reg, u16, yes, no_op);    
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn + rm]! */                                        
-                      arm_access_memory(load, + reg[rm], half_reg, s8, yes, no_op);     
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn + rm]! */                                        
-                      arm_access_memory(load, + reg[rm], half_reg, s16, yes, no_op);    
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* MOVS rd, reg_op */                                                 
-                arm_data_proc_logic_flags(reg_sh, reg);                               
-             }                                                                       
-             break;                                                                  
-
-          case 0x1C:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                /* STRH rd, [rn + imm] */                                             
-                arm_access_memory(store, + offset, half_imm, u16, no, no_op);         
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* BIC rd, rn, reg_op */                                              
-                arm_data_proc(reg[rn] & (~reg_sh), reg);                              
-             }                                                                       
-             break;                                                                  
-
-          case 0x1D:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 1:                                                             
-                      /* LDRH rd, [rn + imm] */                                         
-                      arm_access_memory(load, + offset, half_imm, u16, no, no_op);      
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn + imm] */                                        
-                      arm_access_memory(load, + offset, half_imm, s8, no, no_op);       
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn + imm] */                                        
-                      arm_access_memory(load, + offset, half_imm, s16, no, no_op);      
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* BICS rd, rn, reg_op */                                             
-                arm_data_proc_logic_flags(reg[rn] & (~reg_sh), reg);                  
-             }                                                                       
-             break;                                                                  
-
-          case 0x1E:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                /* STRH rd, [rn + imm]! */                                            
-                arm_access_memory(store, + offset, half_imm, u16, yes, no_op);        
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* MVN rd, reg_op */                                                  
-                arm_data_proc(~reg_sh, reg);                                          
-             }                                                                       
-             break;                                                                  
-
-          case 0x1F:                                                                
-             if((opcode & 0x90) == 0x90)                                             
-             {                                                                       
-                switch((opcode >> 5) & 0x03)                                          
-                {                                                                     
-                   case 1:                                                             
-                      /* LDRH rd, [rn + imm]! */                                        
-                      arm_access_memory(load, + offset, half_imm, u16, yes, no_op);     
-                      break;                                                            
-
-                   case 2:                                                             
-                      /* LDRSB rd, [rn + imm]! */                                       
-                      arm_access_memory(load, + offset, half_imm, s8, yes, no_op);      
-                      break;                                                            
-
-                   case 3:                                                             
-                      /* LDRSH rd, [rn + imm]! */                                       
-                      arm_access_memory(load, + offset, half_imm, s16, yes, no_op);     
-                      break;                                                            
-                }                                                                     
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* MVNS rd, rn, reg_op */                                             
-                arm_data_proc_logic_flags(~reg_sh, reg);                              
-             }                                                                       
-             break;                                                                  
-
-          case 0x20:                                                                
-             /* AND rd, rn, imm */                                                   
-             arm_data_proc(reg[rn] & imm, imm);                                      
-             break;                                                                  
-
-          case 0x21:                                                                
-             /* ANDS rd, rn, imm */                                                  
-             arm_data_proc_logic_flags(reg[rn] & imm, imm);                          
-             break;                                                                  
-
-          case 0x22:                                                                
-             /* EOR rd, rn, imm */                                                   
-             arm_data_proc(reg[rn] ^ imm, imm);                                      
-             break;                                                                  
-
-          case 0x23:                                                                
-             /* EORS rd, rn, imm */                                                  
-             arm_data_proc_logic_flags(reg[rn] ^ imm, imm);                          
-             break;                                                                  
-
-          case 0x24:                                                                
-             /* SUB rd, rn, imm */                                                   
-             arm_data_proc(reg[rn] - imm, imm);                                      
-             break;                                                                  
-
-          case 0x25:                                                                
-             /* SUBS rd, rn, imm */                                                  
-             arm_data_proc_sub_flags(reg[rn], imm, imm);                             
-             break;                                                                  
-
-          case 0x26:                                                                
-             /* RSB rd, rn, imm */                                                   
-             arm_data_proc(imm - reg[rn], imm);                                      
-             break;                                                                  
-
-          case 0x27:                                                                
-             /* RSBS rd, rn, imm */                                                  
-             arm_data_proc_sub_flags(imm, reg[rn], imm);                             
-             break;                                                                  
-
-          case 0x28:                                                                
-             /* ADD rd, rn, imm */                                                   
-             arm_data_proc(reg[rn] + imm, imm);                                      
-             break;                                                                  
-
-          case 0x29:                                                                
-             /* ADDS rd, rn, imm */                                                  
-             arm_data_proc_add_flags(reg[rn], imm, imm);                             
-             break;                                                                  
-
-          case 0x2A:                                                                
-             /* ADC rd, rn, imm */                                                   
-             arm_data_proc(reg[rn] + imm + c_flag, imm);                             
-             break;                                                                  
-
-          case 0x2B:                                                                
-             /* ADCS rd, rn, imm */                                                  
-             arm_data_proc_add_flags(reg[rn] + imm, c_flag, imm);                    
-             break;                                                                  
-
-          case 0x2C:                                                                
-             /* SBC rd, rn, imm */                                                   
-             arm_data_proc(reg[rn] - imm + c_flag - 1, imm);                         
-             break;                                                                  
-
-          case 0x2D:                                                                
-             /* SBCS rd, rn, imm */                                                  
-             arm_data_proc_sub_flags(reg[rn], (imm + (c_flag ^ 1)), imm);            
-             break;                                                                  
-
-          case 0x2E:                                                                
-             /* RSC rd, rn, imm */                                                   
-             arm_data_proc(imm - reg[rn] + c_flag - 1, imm);                         
-             break;                                                                  
-
-          case 0x2F:                                                                
-             /* RSCS rd, rn, imm */                                                  
-             arm_data_proc_sub_flags((imm + c_flag - 1), reg[rn], imm);              
-             break;                                                                  
-
-          case 0x30:                                                       
+          case 0x4:
+             /* MI       */
+             if(!n_flag)
+                arm_next_instruction();
+             break;
+
+          case 0x5:
+             /* PL       */
+             if(n_flag)
+                arm_next_instruction();
+             break;
+
+          case 0x6:
+             /* VS       */
+             if(!v_flag)
+                arm_next_instruction();
+             break;
+
+          case 0x7:
+             /* VC       */
+             if(v_flag)
+                arm_next_instruction();
+             break;
+
+          case 0x8:
+             /* HI       */
+             if((c_flag == 0) | z_flag)
+                arm_next_instruction();
+             break;
+
+          case 0x9:
+             /* LS       */
+             if(c_flag & (z_flag ^ 1))
+                arm_next_instruction();
+             break;
+
+          case 0xA:
+             /* GE       */
+             if(n_flag != v_flag)
+                arm_next_instruction();
+             break;
+
+          case 0xB:
+             /* LT       */
+             if(n_flag == v_flag)
+                arm_next_instruction();
+             break;
+
+          case 0xC:
+             /* GT       */
+             if(z_flag | (n_flag != v_flag))
+                arm_next_instruction();
+             break;
+
+          case 0xD:
+             /* LE       */
+             if((z_flag == 0) & (n_flag == v_flag))
+                arm_next_instruction();
+             break;
+
+          case 0xE:
+             /* AL       */
+             break;
+
+          case 0xF:
+             /* Reserved - treat as "never" */
+             arm_next_instruction();
+             break;
+       }
+
+       switch((opcode >> 20) & 0xFF)
+       {
+          case 0x00:
+             if((opcode & 0x90) == 0x90)
+             {
+                if(opcode & 0x20)
+                {
+                   /* STRH rd, [rn], -rm */
+                   arm_access_memory(store, no_op, half_reg, u16, yes, - reg[rm]);
+                }
+                else
+                {
+                   /* MUL rd, rm, rs */
+                   arm_multiply(no_op, no);
+                }
+             }
+             else
+             {
+                /* AND rd, rn, reg_op */
+                arm_data_proc(reg[rn] & reg_sh, reg);
+             }
+             break;
+
+          case 0x01:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 0:
+                      /* MULS rd, rm, rs */
+                      arm_multiply(no_op, yes);
+                      break;
+
+                   case 1:
+                      /* LDRH rd, [rn], -rm */
+                      arm_access_memory(load, no_op, half_reg, u16, yes, - reg[rm]);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn], -rm */
+                      arm_access_memory(load, no_op, half_reg, s8, yes, - reg[rm]);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn], -rm */
+                      arm_access_memory(load, no_op, half_reg, s16, yes, - reg[rm]);
+                      break;
+                }
+             }
+             else
+             {
+                /* ANDS rd, rn, reg_op */
+                arm_data_proc_logic_flags(reg[rn] & reg_sh, reg);
+             }
+             break;
+
+          case 0x02:
+             if((opcode & 0x90) == 0x90)
+             {
+                if(opcode & 0x20)
+                {
+                   /* STRH rd, [rn], -rm */
+                   arm_access_memory(store, no_op, half_reg, u16, yes, - reg[rm]);
+                }
+                else
+                {
+                   /* MLA rd, rm, rs, rn */
+                   arm_multiply(+ reg[rn], no);
+                }
+             }
+             else
+             {
+                /* EOR rd, rn, reg_op */
+                arm_data_proc(reg[rn] ^ reg_sh, reg);
+             }
+             break;
+
+          case 0x03:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 0:
+                      /* MLAS rd, rm, rs, rn */
+                      arm_multiply(+ reg[rn], yes);
+                      break;
+
+                   case 1:
+                      /* LDRH rd, [rn], -rm */
+                      arm_access_memory(load, no_op, half_reg, u16, yes, - reg[rm]);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn], -rm */
+                      arm_access_memory(load, no_op, half_reg, s8, yes, - reg[rm]);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn], -rm */
+                      arm_access_memory(load, no_op, half_reg, s16, yes, - reg[rm]);
+                      break;
+                }
+             }
+             else
+             {
+                /* EORS rd, rn, reg_op */
+                arm_data_proc_logic_flags(reg[rn] ^ reg_sh, reg);
+             }
+             break;
+
+          case 0x04:
+             if((opcode & 0x90) == 0x90)
+             {
+                /* STRH rd, [rn], -imm */
+                arm_access_memory(store, no_op, half_imm, u16, yes, - offset);
+             }
+             else
+             {
+                /* SUB rd, rn, reg_op */
+                arm_data_proc(reg[rn] - reg_sh, reg);
+             }
+             break;
+
+          case 0x05:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 1:
+                      /* LDRH rd, [rn], -imm */
+                      arm_access_memory(load, no_op, half_imm, u16, yes, - offset);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn], -imm */
+                      arm_access_memory(load, no_op, half_imm, s8, yes, - offset);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn], -imm */
+                      arm_access_memory(load, no_op, half_imm, s16, yes, - offset);
+                      break;
+                }
+             }
+             else
+             {
+                /* SUBS rd, rn, reg_op */
+                arm_data_proc_sub_flags(reg[rn], reg_sh, reg);
+             }
+             break;
+
+          case 0x06:
+             if((opcode & 0x90) == 0x90)
+             {
+                /* STRH rd, [rn], -imm */
+                arm_access_memory(store, no_op, half_imm, u16, yes, - offset);
+             }
+             else
+             {
+                /* RSB rd, rn, reg_op */
+                arm_data_proc(reg_sh - reg[rn], reg);
+             }
+             break;
+
+          case 0x07:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 1:
+                      /* LDRH rd, [rn], -imm */
+                      arm_access_memory(load, no_op, half_imm, u16, yes, - offset);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn], -imm */
+                      arm_access_memory(load, no_op, half_imm, s8, yes, - offset);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn], -imm */
+                      arm_access_memory(load, no_op, half_imm, s16, yes, - offset);
+                      break;
+                }
+             }
+             else
+             {
+                /* RSBS rd, rn, reg_op */
+                arm_data_proc_sub_flags(reg_sh, reg[rn], reg);
+             }
+             break;
+
+          case 0x08:
+             if((opcode & 0x90) == 0x90)
+             {
+                if(opcode & 0x20)
+                {
+                   /* STRH rd, [rn], +rm */
+                   arm_access_memory(store, no_op, half_reg, u16, yes, + reg[rm]);
+                }
+                else
+                {
+                   /* UMULL rd, rm, rs */
+                   arm_multiply_long(no_op, no, u);
+                }
+             }
+             else
+             {
+                /* ADD rd, rn, reg_op */
+                arm_data_proc(reg[rn] + reg_sh, reg);
+             }
+             break;
+
+          case 0x09:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 0:
+                      /* UMULLS rdlo, rdhi, rm, rs */
+                      arm_multiply_long(no_op, yes, u);
+                      break;
+
+                   case 1:
+                      /* LDRH rd, [rn], +rm */
+                      arm_access_memory(load, no_op, half_reg, u16, yes, + reg[rm]);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn], +rm */
+                      arm_access_memory(load, no_op, half_reg, s8, yes, + reg[rm]);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn], +rm */
+                      arm_access_memory(load, no_op, half_reg, s16, yes, + reg[rm]);
+                      break;
+                }
+             }
+             else
+             {
+                /* ADDS rd, rn, reg_op */
+                arm_data_proc_add_flags(reg[rn], reg_sh, reg);
+             }
+             break;
+
+          case 0x0A:
+             if((opcode & 0x90) == 0x90)
+             {
+                if(opcode & 0x20)
+                {
+                   /* STRH rd, [rn], +rm */
+                   arm_access_memory(store, no_op, half_reg, u16, yes, + reg[rm]);
+                }
+                else
+                {
+                   /* UMLAL rd, rm, rs */
+                   arm_multiply_long(arm_multiply_long_addop(u), no, u);
+                }
+             }
+             else
+             {
+                /* ADC rd, rn, reg_op */
+                arm_data_proc(reg[rn] + reg_sh + c_flag, reg);
+             }
+             break;
+
+          case 0x0B:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 0:
+                      /* UMLALS rdlo, rdhi, rm, rs */
+                      arm_multiply_long(arm_multiply_long_addop(u), yes, u);
+                      break;
+
+                   case 1:
+                      /* LDRH rd, [rn], +rm */
+                      arm_access_memory(load, no_op, half_reg, u16, yes, + reg[rm]);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn], +rm */
+                      arm_access_memory(load, no_op, half_reg, s8, yes, + reg[rm]);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn], +rm */
+                      arm_access_memory(load, no_op, half_reg, s16, yes, + reg[rm]);
+                      break;
+                }
+             }
+             else
+             {
+                /* ADCS rd, rn, reg_op */
+                arm_data_proc_add_flags(reg[rn], reg_sh + c_flag, reg);
+             }
+             break;
+
+          case 0x0C:
+             if((opcode & 0x90) == 0x90)
+             {
+                if(opcode & 0x20)
+                {
+                   /* STRH rd, [rn], +imm */
+                   arm_access_memory(store, no_op, half_imm, u16, yes, + offset);
+                }
+                else
+                {
+                   /* SMULL rd, rm, rs */
+                   arm_multiply_long(no_op, no, s);
+                }
+             }
+             else
+             {
+                /* SBC rd, rn, reg_op */
+                arm_data_proc(reg[rn] - (reg_sh + (c_flag ^ 1)), reg);
+             }
+             break;
+
+          case 0x0D:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 0:
+                      /* SMULLS rdlo, rdhi, rm, rs */
+                      arm_multiply_long(no_op, yes, s);
+                      break;
+
+                   case 1:
+                      /* LDRH rd, [rn], +imm */
+                      arm_access_memory(load, no_op, half_imm, u16, yes, + offset);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn], +imm */
+                      arm_access_memory(load, no_op, half_imm, s8, yes, + offset);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn], +imm */
+                      arm_access_memory(load, no_op, half_imm, s16, yes, + offset);
+                      break;
+                }
+             }
+             else
+             {
+                /* SBCS rd, rn, reg_op */
+                arm_data_proc_sub_flags(reg[rn], (reg_sh + (c_flag ^ 1)), reg);
+             }
+             break;
+
+          case 0x0E:
+             if((opcode & 0x90) == 0x90)
+             {
+                if(opcode & 0x20)
+                {
+                   /* STRH rd, [rn], +imm */
+                   arm_access_memory(store, no_op, half_imm, u16, yes, + offset);
+                }
+                else
+                {
+                   /* SMLAL rd, rm, rs */
+                   arm_multiply_long(arm_multiply_long_addop(s), no, s);
+                }
+             }
+             else
+             {
+                /* RSC rd, rn, reg_op */
+                arm_data_proc(reg_sh - reg[rn] + c_flag - 1, reg);
+             }
+             break;
+
+          case 0x0F:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 0:
+                      /* SMLALS rdlo, rdhi, rm, rs */
+                      arm_multiply_long(arm_multiply_long_addop(s), yes, s);
+                      break;
+
+                   case 1:
+                      /* LDRH rd, [rn], +imm */
+                      arm_access_memory(load, no_op, half_imm, u16, yes, + offset);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn], +imm */
+                      arm_access_memory(load, no_op, half_imm, s8, yes, + offset);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn], +imm */
+                      arm_access_memory(load, no_op, half_imm, s16, yes, + offset);
+                      break;
+                }
+             }
+             else
+             {
+                /* RSCS rd, rn, reg_op */
+                arm_data_proc_sub_flags((reg_sh + c_flag - 1), reg[rn], reg);
+             }
+             break;
+
+          case 0x10:
+             if((opcode & 0x90) == 0x90)
+             {
+                if(opcode & 0x20)
+                {
+                   /* STRH rd, [rn - rm] */
+                   arm_access_memory(store, - reg[rm], half_reg, u16, no, no_op);
+                }
+                else
+                {
+                   /* SWP rd, rm, [rn] */
+                   arm_swap(u32);
+                }
+             }
+             else
+             {
+                /* MRS rd, cpsr */
+                arm_psr(reg, read, reg[REG_CPSR]);
+             }
+             break;
+
+          case 0x11:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 1:
+                      /* LDRH rd, [rn - rm] */
+                      arm_access_memory(load, - reg[rm], half_reg, u16, no, no_op);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn - rm] */
+                      arm_access_memory(load, - reg[rm], half_reg, s8, no, no_op);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn - rm] */
+                      arm_access_memory(load, - reg[rm], half_reg, s16, no, no_op);
+                      break;
+                }
+             }
+             else
+             {
+                /* TST rd, rn, reg_op */
+                arm_data_proc_test_logic(reg[rn] & reg_sh, reg);
+             }
+             break;
+
+          case 0x12:
+             if((opcode & 0x90) == 0x90)
+             {
+                /* STRH rd, [rn - rm]! */
+                arm_access_memory(store, - reg[rm], half_reg, u16, yes, no_op);
+             }
+             else
+             {
+                if(opcode & 0x10)
+                {
+                   /* BX rn */
+                   arm_decode_branchx(opcode);
+                   u32 src = reg[rn];
+                   if(src & 0x01)
+                   {
+                      src -= 1;
+                      arm_pc_offset_update_direct(src);
+                      reg[REG_CPSR] |= 0x20;
+                      goto thumb_loop;
+                   }
+                   else
+                   {
+                      arm_pc_offset_update_direct(src);
+                   }
+                }
+                else
+                {
+                   /* MSR cpsr, rm */
+                   arm_psr(reg, store, cpsr);
+                }
+             }
+             break;
+
+          case 0x13:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 1:
+                      /* LDRH rd, [rn - rm]! */
+                      arm_access_memory(load, - reg[rm], half_reg, u16, yes, no_op);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn - rm]! */
+                      arm_access_memory(load, - reg[rm], half_reg, s8, yes, no_op);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn - rm]! */
+                      arm_access_memory(load, - reg[rm], half_reg, s16, yes, no_op);
+                      break;
+                }
+             }
+             else
+             {
+                /* TEQ rd, rn, reg_op */
+                arm_data_proc_test_logic(reg[rn] ^ reg_sh, reg);
+             }
+             break;
+
+          case 0x14:
+             if((opcode & 0x90) == 0x90)
+             {
+                if(opcode & 0x20)
+                {
+                   /* STRH rd, [rn - imm] */
+                   arm_access_memory(store, - offset, half_imm, u16, no, no_op);
+                }
+                else
+                {
+                   /* SWPB rd, rm, [rn] */
+                   arm_swap(u8);
+                }
+             }
+             else
+             {
+                /* MRS rd, spsr */
+                arm_psr(reg, read, spsr[reg[CPU_MODE]]);
+             }
+             break;
+
+          case 0x15:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 1:
+                      /* LDRH rd, [rn - imm] */
+                      arm_access_memory(load, - offset, half_imm, u16, no, no_op);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn - imm] */
+                      arm_access_memory(load, - offset, half_imm, s8, no, no_op);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn - imm] */
+                      arm_access_memory(load, - offset, half_imm, s16, no, no_op);
+                      break;
+                }
+             }
+             else
+             {
+                /* CMP rn, reg_op */
+                arm_data_proc_test_sub(reg[rn], reg_sh, reg);
+             }
+             break;
+
+          case 0x16:
+             if((opcode & 0x90) == 0x90)
+             {
+                /* STRH rd, [rn - imm]! */
+                arm_access_memory(store, - offset, half_imm, u16, yes, no_op);
+             }
+             else
+             {
+                /* MSR spsr, rm */
+                arm_psr(reg, store, spsr);
+             }
+             break;
+
+          case 0x17:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 1:
+                      /* LDRH rd, [rn - imm]! */
+                      arm_access_memory(load, - offset, half_imm, u16, yes, no_op);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn - imm]! */
+                      arm_access_memory(load, - offset, half_imm, s8, yes, no_op);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn - imm]! */
+                      arm_access_memory(load, - offset, half_imm, s16, yes, no_op);
+                      break;
+                }
+             }
+             else
+             {
+                /* CMN rd, rn, reg_op */
+                arm_data_proc_test_add(reg[rn], reg_sh, reg);
+             }
+             break;
+
+          case 0x18:
+             if((opcode & 0x90) == 0x90)
+             {
+                /* STRH rd, [rn + rm] */
+                arm_access_memory(store, + reg[rm], half_reg, u16, no, no_op);
+             }
+             else
+             {
+                /* ORR rd, rn, reg_op */
+                arm_data_proc(reg[rn] | reg_sh, reg);
+             }
+             break;
+
+          case 0x19:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 1:
+                      /* LDRH rd, [rn + rm] */
+                      arm_access_memory(load, + reg[rm], half_reg, u16, no, no_op);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn + rm] */
+                      arm_access_memory(load, + reg[rm], half_reg, s8, no, no_op);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn + rm] */
+                      arm_access_memory(load, + reg[rm], half_reg, s16, no, no_op);
+                      break;
+                }
+             }
+             else
+             {
+                /* ORRS rd, rn, reg_op */
+                arm_data_proc_logic_flags(reg[rn] | reg_sh, reg);
+             }
+             break;
+
+          case 0x1A:
+             if((opcode & 0x90) == 0x90)
+             {
+                /* STRH rd, [rn + rm]! */
+                arm_access_memory(store, + reg[rm], half_reg, u16, yes, no_op);
+             }
+             else
+             {
+                /* MOV rd, reg_op */
+                arm_data_proc(reg_sh, reg);
+             }
+             break;
+
+          case 0x1B:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 1:
+                      /* LDRH rd, [rn + rm]! */
+                      arm_access_memory(load, + reg[rm], half_reg, u16, yes, no_op);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn + rm]! */
+                      arm_access_memory(load, + reg[rm], half_reg, s8, yes, no_op);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn + rm]! */
+                      arm_access_memory(load, + reg[rm], half_reg, s16, yes, no_op);
+                      break;
+                }
+             }
+             else
+             {
+                /* MOVS rd, reg_op */
+                arm_data_proc_logic_flags(reg_sh, reg);
+             }
+             break;
+
+          case 0x1C:
+             if((opcode & 0x90) == 0x90)
+             {
+                /* STRH rd, [rn + imm] */
+                arm_access_memory(store, + offset, half_imm, u16, no, no_op);
+             }
+             else
+             {
+                /* BIC rd, rn, reg_op */
+                arm_data_proc(reg[rn] & (~reg_sh), reg);
+             }
+             break;
+
+          case 0x1D:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 1:
+                      /* LDRH rd, [rn + imm] */
+                      arm_access_memory(load, + offset, half_imm, u16, no, no_op);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn + imm] */
+                      arm_access_memory(load, + offset, half_imm, s8, no, no_op);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn + imm] */
+                      arm_access_memory(load, + offset, half_imm, s16, no, no_op);
+                      break;
+                }
+             }
+             else
+             {
+                /* BICS rd, rn, reg_op */
+                arm_data_proc_logic_flags(reg[rn] & (~reg_sh), reg);
+             }
+             break;
+
+          case 0x1E:
+             if((opcode & 0x90) == 0x90)
+             {
+                /* STRH rd, [rn + imm]! */
+                arm_access_memory(store, + offset, half_imm, u16, yes, no_op);
+             }
+             else
+             {
+                /* MVN rd, reg_op */
+                arm_data_proc(~reg_sh, reg);
+             }
+             break;
+
+          case 0x1F:
+             if((opcode & 0x90) == 0x90)
+             {
+                switch((opcode >> 5) & 0x03)
+                {
+                   case 1:
+                      /* LDRH rd, [rn + imm]! */
+                      arm_access_memory(load, + offset, half_imm, u16, yes, no_op);
+                      break;
+
+                   case 2:
+                      /* LDRSB rd, [rn + imm]! */
+                      arm_access_memory(load, + offset, half_imm, s8, yes, no_op);
+                      break;
+
+                   case 3:
+                      /* LDRSH rd, [rn + imm]! */
+                      arm_access_memory(load, + offset, half_imm, s16, yes, no_op);
+                      break;
+                }
+             }
+             else
+             {
+                /* MVNS rd, rn, reg_op */
+                arm_data_proc_logic_flags(~reg_sh, reg);
+             }
+             break;
+
+          case 0x20:
+             /* AND rd, rn, imm */
+             arm_data_proc(reg[rn] & imm, imm);
+             break;
+
+          case 0x21:
+             /* ANDS rd, rn, imm */
+             arm_data_proc_logic_flags(reg[rn] & imm, imm);
+             break;
+
+          case 0x22:
+             /* EOR rd, rn, imm */
+             arm_data_proc(reg[rn] ^ imm, imm);
+             break;
+
+          case 0x23:
+             /* EORS rd, rn, imm */
+             arm_data_proc_logic_flags(reg[rn] ^ imm, imm);
+             break;
+
+          case 0x24:
+             /* SUB rd, rn, imm */
+             arm_data_proc(reg[rn] - imm, imm);
+             break;
+
+          case 0x25:
+             /* SUBS rd, rn, imm */
+             arm_data_proc_sub_flags(reg[rn], imm, imm);
+             break;
+
+          case 0x26:
+             /* RSB rd, rn, imm */
+             arm_data_proc(imm - reg[rn], imm);
+             break;
+
+          case 0x27:
+             /* RSBS rd, rn, imm */
+             arm_data_proc_sub_flags(imm, reg[rn], imm);
+             break;
+
+          case 0x28:
+             /* ADD rd, rn, imm */
+             arm_data_proc(reg[rn] + imm, imm);
+             break;
+
+          case 0x29:
+             /* ADDS rd, rn, imm */
+             arm_data_proc_add_flags(reg[rn], imm, imm);
+             break;
+
+          case 0x2A:
+             /* ADC rd, rn, imm */
+             arm_data_proc(reg[rn] + imm + c_flag, imm);
+             break;
+
+          case 0x2B:
+             /* ADCS rd, rn, imm */
+             arm_data_proc_add_flags(reg[rn] + imm, c_flag, imm);
+             break;
+
+          case 0x2C:
+             /* SBC rd, rn, imm */
+             arm_data_proc(reg[rn] - imm + c_flag - 1, imm);
+             break;
+
+          case 0x2D:
+             /* SBCS rd, rn, imm */
+             arm_data_proc_sub_flags(reg[rn], (imm + (c_flag ^ 1)), imm);
+             break;
+
+          case 0x2E:
+             /* RSC rd, rn, imm */
+             arm_data_proc(imm - reg[rn] + c_flag - 1, imm);
+             break;
+
+          case 0x2F:
+             /* RSCS rd, rn, imm */
+             arm_data_proc_sub_flags((imm + c_flag - 1), reg[rn], imm);
+             break;
+
+          case 0x30:
           case 0x31:
-             /* TST rn, imm */                                                       
-             arm_data_proc_test_logic(reg[rn] & imm, imm);                           
-             break;                                                                  
+             /* TST rn, imm */
+             arm_data_proc_test_logic(reg[rn] & imm, imm);
+             break;
 
-          case 0x32:                                                                
-             /* MSR cpsr, imm */                                                     
-             arm_psr(imm, store, cpsr);                                              
-             break;                                                                  
+          case 0x32:
+             /* MSR cpsr, imm */
+             arm_psr(imm, store, cpsr);
+             break;
 
-          case 0x33:                                                                
-             /* TEQ rn, imm */                                                       
-             arm_data_proc_test_logic(reg[rn] ^ imm, imm);                           
-             break;                                                                  
+          case 0x33:
+             /* TEQ rn, imm */
+             arm_data_proc_test_logic(reg[rn] ^ imm, imm);
+             break;
 
           case 0x34:
-          case 0x35:                                                       
-             /* CMP rn, imm */                                                       
-             arm_data_proc_test_sub(reg[rn], imm, imm);                              
-             break;                                                                  
-
-          case 0x36:                                                                
-             /* MSR spsr, imm */                                                     
-             arm_psr(imm, store, spsr);                                              
-             break;                                                                  
-
-          case 0x37:                                                                
-             /* CMN rn, imm */                                                       
-             arm_data_proc_test_add(reg[rn], imm, imm);                              
-             break;                                                                  
-
-          case 0x38:                                                                
-             /* ORR rd, rn, imm */                                                   
-             arm_data_proc(reg[rn] | imm, imm);                                      
-             break;                                                                  
-
-          case 0x39:                                                                
-             /* ORRS rd, rn, imm */                                                  
-             arm_data_proc_logic_flags(reg[rn] | imm, imm);                          
-             break;                                                                  
-
-          case 0x3A:                                                                
-             /* MOV rd, imm */                                                       
-             arm_data_proc(imm, imm);                                                
-             break;                                                                  
-
-          case 0x3B:                                                                
-             /* MOVS rd, imm */                                                      
-             arm_data_proc_logic_flags(imm, imm);                                    
-             break;                                                                  
-
-          case 0x3C:                                                                
-             /* BIC rd, rn, imm */                                                   
-             arm_data_proc(reg[rn] & (~imm), imm);                                   
-             break;                                                                  
-
-          case 0x3D:                                                                
-             /* BICS rd, rn, imm */                                                  
-             arm_data_proc_logic_flags(reg[rn] & (~imm), imm);                       
-             break;                                                                  
-
-          case 0x3E:                                                                
-             /* MVN rd, imm */                                                       
-             arm_data_proc(~imm, imm);                                               
-             break;                                                                  
-
-          case 0x3F:                                                                
-             /* MVNS rd, imm */                                                      
-             arm_data_proc_logic_flags(~imm, imm);                                   
-             break;                                                                  
-
-          case 0x40:                                                                
-             /* STR rd, [rn], -imm */                                                
-             arm_access_memory(store, no_op, imm, u32, yes, - offset);               
-             break;                                                                  
-
-          case 0x41:                                                                
-             /* LDR rd, [rn], -imm */                                                
-             arm_access_memory(load, no_op, imm, u32, yes, - offset);                
-             break;                                                                  
-
-          case 0x42:                                                                
-             /* STRT rd, [rn], -imm */                                               
-             arm_access_memory(store, no_op, imm, u32, yes, - offset);               
-             break;                                                                  
-
-          case 0x43:                                                                
-             /* LDRT rd, [rn], -imm */                                               
-             arm_access_memory(load, no_op, imm, u32, yes, - offset);                
-             break;                                                                  
-
-          case 0x44:                                                                
-             /* STRB rd, [rn], -imm */                                               
-             arm_access_memory(store, no_op, imm, u8, yes, - offset);                
-             break;                                                                  
-
-          case 0x45:                                                                
-             /* LDRB rd, [rn], -imm */                                               
-             arm_access_memory(load, no_op, imm, u8, yes, - offset);                 
-             break;                                                                  
-
-          case 0x46:                                                                
-             /* STRBT rd, [rn], -imm */                                              
-             arm_access_memory(store, no_op, imm, u8, yes, - offset);                
-             break;                                                                  
-
-          case 0x47:                                                                
-             /* LDRBT rd, [rn], -imm */                                              
-             arm_access_memory(load, no_op, imm, u8, yes, - offset);                 
-             break;                                                                  
-
-          case 0x48:                                                                
-             /* STR rd, [rn], +imm */                                                
-             arm_access_memory(store, no_op, imm, u32, yes, + offset);               
-             break;                                                                  
-
-          case 0x49:                                                                
-             /* LDR rd, [rn], +imm */                                                
-             arm_access_memory(load, no_op, imm, u32, yes, + offset);                
-             break;                                                                  
-
-          case 0x4A:                                                                
-             /* STRT rd, [rn], +imm */                                               
-             arm_access_memory(store, no_op, imm, u32, yes, + offset);               
-             break;                                                                  
-
-          case 0x4B:                                                                
-             /* LDRT rd, [rn], +imm */                                               
-             arm_access_memory(load, no_op, imm, u32, yes, + offset);                
-             break;                                                                  
-
-          case 0x4C:                                                                
-             /* STRB rd, [rn], +imm */                                               
-             arm_access_memory(store, no_op, imm, u8, yes, + offset);                
-             break;                                                                  
-
-          case 0x4D:                                                                
-             /* LDRB rd, [rn], +imm */                                               
-             arm_access_memory(load, no_op, imm, u8, yes, + offset);                 
-             break;                                                                  
-
-          case 0x4E:                                                                
-             /* STRBT rd, [rn], +imm */                                              
-             arm_access_memory(store, no_op, imm, u8, yes, + offset);                
-             break;                                                                  
-
-          case 0x4F:                                                                
-             /* LDRBT rd, [rn], +imm */                                              
-             arm_access_memory(load, no_op, imm, u8, yes, + offset);                 
-             break;                                                                  
-
-          case 0x50:                                                                
-             /* STR rd, [rn - imm] */                                                
-             arm_access_memory(store, - offset, imm, u32, no, no_op);                
-             break;                                                                  
-
-          case 0x51:                                                                
-             /* LDR rd, [rn - imm] */                                                
-             arm_access_memory(load, - offset, imm, u32, no, no_op);                 
-             break;                                                                  
-
-          case 0x52:                                                                
-             /* STR rd, [rn - imm]! */                                               
-             arm_access_memory(store, - offset, imm, u32, yes, no_op);               
-             break;                                                                  
-
-          case 0x53:                                                                
-             /* LDR rd, [rn - imm]! */                                               
-             arm_access_memory(load, - offset, imm, u32, yes, no_op);                
-             break;                                                                  
-
-          case 0x54:                                                                
-             /* STRB rd, [rn - imm] */                                               
-             arm_access_memory(store, - offset, imm, u8, no, no_op);                 
-             break;                                                                  
-
-          case 0x55:                                                                
-             /* LDRB rd, [rn - imm] */                                               
-             arm_access_memory(load, - offset, imm, u8, no, no_op);                  
-             break;                                                                  
-
-          case 0x56:                                                                
-             /* STRB rd, [rn - imm]! */                                              
-             arm_access_memory(store, - offset, imm, u8, yes, no_op);                
-             break;                                                                  
-
-          case 0x57:                                                                
-             /* LDRB rd, [rn - imm]! */                                              
-             arm_access_memory(load, - offset, imm, u8, yes, no_op);                 
-             break;                                                                  
-
-          case 0x58:                                                                
-             /* STR rd, [rn + imm] */                                                
-             arm_access_memory(store, + offset, imm, u32, no, no_op);                
-             break;                                                                  
-
-          case 0x59:                                                                
-             /* LDR rd, [rn + imm] */                                                
-             arm_access_memory(load, + offset, imm, u32, no, no_op);                 
-             break;                                                                  
-
-          case 0x5A:                                                                
-             /* STR rd, [rn + imm]! */                                               
-             arm_access_memory(store, + offset, imm, u32, yes, no_op);               
-             break;                                                                  
-
-          case 0x5B:                                                                
-             /* LDR rd, [rn + imm]! */                                               
-             arm_access_memory(load, + offset, imm, u32, yes, no_op);                
-             break;                                                                  
-
-          case 0x5C:                                                                
-             /* STRB rd, [rn + imm] */                                               
-             arm_access_memory(store, + offset, imm, u8, no, no_op);                 
-             break;                                                                  
-
-          case 0x5D:                                                                
-             /* LDRB rd, [rn + imm] */                                               
-             arm_access_memory(load, + offset, imm, u8, no, no_op);                  
-             break;                                                                  
-
-          case 0x5E:                                                                
-             /* STRB rd, [rn + imm]! */                                              
-             arm_access_memory(store, + offset, imm, u8, yes, no_op);                
-             break;                                                                  
-
-          case 0x5F:                                                                
-             /* LDRBT rd, [rn + imm]! */                                             
-             arm_access_memory(load, + offset, imm, u8, yes, no_op);                 
-             break;                                                                  
-
-          case 0x60:                                                                
-             /* STR rd, [rn], -reg_op */                                             
-             arm_access_memory(store, no_op, reg, u32, yes, - reg_offset);           
-             break;                                                                  
-
-          case 0x61:                                                                
-             /* LDR rd, [rn], -reg_op */                                             
-             arm_access_memory(load, no_op, reg, u32, yes, - reg_offset);            
-             break;                                                                  
-
-          case 0x62:                                                                
-             /* STRT rd, [rn], -reg_op */                                            
-             arm_access_memory(store, no_op, reg, u32, yes, - reg_offset);           
-             break;                                                                  
-
-          case 0x63:                                                                
-             /* LDRT rd, [rn], -reg_op */                                            
-             arm_access_memory(load, no_op, reg, u32, yes, - reg_offset);            
-             break;                                                                  
-
-          case 0x64:                                                                
-             /* STRB rd, [rn], -reg_op */                                            
-             arm_access_memory(store, no_op, reg, u8, yes, - reg_offset);            
-             break;                                                                  
-
-          case 0x65:                                                                
-             /* LDRB rd, [rn], -reg_op */                                            
-             arm_access_memory(load, no_op, reg, u8, yes, - reg_offset);             
-             break;                                                                  
-
-          case 0x66:                                                                
-             /* STRBT rd, [rn], -reg_op */                                           
-             arm_access_memory(store, no_op, reg, u8, yes, - reg_offset);            
-             break;                                                                  
-
-          case 0x67:                                                                
-             /* LDRBT rd, [rn], -reg_op */                                           
-             arm_access_memory(load, no_op, reg, u8, yes, - reg_offset);             
-             break;                                                                  
-
-          case 0x68:                                                                
-             /* STR rd, [rn], +reg_op */                                             
-             arm_access_memory(store, no_op, reg, u32, yes, + reg_offset);           
-             break;                                                                  
-
-          case 0x69:                                                                
-             /* LDR rd, [rn], +reg_op */                                             
-             arm_access_memory(load, no_op, reg, u32, yes, + reg_offset);            
-             break;                                                                  
-
-          case 0x6A:                                                                
-             /* STRT rd, [rn], +reg_op */                                            
-             arm_access_memory(store, no_op, reg, u32, yes, + reg_offset);           
-             break;                                                                  
-
-          case 0x6B:                                                                
-             /* LDRT rd, [rn], +reg_op */                                            
-             arm_access_memory(load, no_op, reg, u32, yes, + reg_offset);            
-             break;                                                                  
-
-          case 0x6C:                                                                
-             /* STRB rd, [rn], +reg_op */                                            
-             arm_access_memory(store, no_op, reg, u8, yes, + reg_offset);            
-             break;                                                                  
-
-          case 0x6D:                                                                
-             /* LDRB rd, [rn], +reg_op */                                            
-             arm_access_memory(load, no_op, reg, u8, yes, + reg_offset);             
-             break;                                                                  
-
-          case 0x6E:                                                                
-             /* STRBT rd, [rn], +reg_op */                                           
-             arm_access_memory(store, no_op, reg, u8, yes, + reg_offset);            
-             break;                                                                  
-
-          case 0x6F:                                                                
-             /* LDRBT rd, [rn], +reg_op */                                           
-             arm_access_memory(load, no_op, reg, u8, yes, + reg_offset);             
-             break;                                                                  
-
-          case 0x70:                                                                
-             /* STR rd, [rn - reg_op] */                                             
-             arm_access_memory(store, - reg_offset, reg, u32, no, no_op);            
-             break;                                                                  
-
-          case 0x71:                                                                
-             /* LDR rd, [rn - reg_op] */                                             
-             arm_access_memory(load, - reg_offset, reg, u32, no, no_op);             
-             break;                                                                  
-
-          case 0x72:                                                                
-             /* STR rd, [rn - reg_op]! */                                            
-             arm_access_memory(store, - reg_offset, reg, u32, yes, no_op);           
-             break;                                                                  
-
-          case 0x73:                                                                
-             /* LDR rd, [rn - reg_op]! */                                            
-             arm_access_memory(load, - reg_offset, reg, u32, yes, no_op);            
-             break;                                                                  
-
-          case 0x74:                                                                
-             /* STRB rd, [rn - reg_op] */                                            
-             arm_access_memory(store, - reg_offset, reg, u8, no, no_op);             
-             break;                                                                  
-
-          case 0x75:                                                                
-             /* LDRB rd, [rn - reg_op] */                                            
-             arm_access_memory(load, - reg_offset, reg, u8, no, no_op);              
-             break;                                                                  
-
-          case 0x76:                                                                
-             /* STRB rd, [rn - reg_op]! */                                           
-             arm_access_memory(store, - reg_offset, reg, u8, yes, no_op);            
-             break;                                                                  
-
-          case 0x77:                                                                
-             /* LDRB rd, [rn - reg_op]! */                                           
-             arm_access_memory(load, - reg_offset, reg, u8, yes, no_op);             
-             break;                                                                  
-
-          case 0x78:                                                                
-             /* STR rd, [rn + reg_op] */                                             
-             arm_access_memory(store, + reg_offset, reg, u32, no, no_op);            
-             break;                                                                  
-
-          case 0x79:                                                                
-             /* LDR rd, [rn + reg_op] */                                             
-             arm_access_memory(load, + reg_offset, reg, u32, no, no_op);             
-             break;                                                                  
-
-          case 0x7A:                                                                
-             /* STR rd, [rn + reg_op]! */                                            
-             arm_access_memory(store, + reg_offset, reg, u32, yes, no_op);           
-             break;                                                                  
-
-          case 0x7B:                                                                
-             /* LDR rd, [rn + reg_op]! */                                            
-             arm_access_memory(load, + reg_offset, reg, u32, yes, no_op);            
-             break;                                                                  
-
-          case 0x7C:                                                                
-             /* STRB rd, [rn + reg_op] */                                            
-             arm_access_memory(store, + reg_offset, reg, u8, no, no_op);             
-             break;                                                                  
-
-          case 0x7D:                                                                
-             /* LDRB rd, [rn + reg_op] */                                            
-             arm_access_memory(load, + reg_offset, reg, u8, no, no_op);              
-             break;                                                                  
-
-          case 0x7E:                                                                
-             /* STRB rd, [rn + reg_op]! */                                           
-             arm_access_memory(store, + reg_offset, reg, u8, yes, no_op);            
-             break;                                                                  
-
-          case 0x7F:                                                                
-             /* LDRBT rd, [rn + reg_op]! */                                          
-             arm_access_memory(load, + reg_offset, reg, u8, yes, no_op);             
-             break;                                                                  
-
-          case 0x80:                                                                
-             /* STMDA rn, rlist */                                                   
-             arm_block_memory(store, down_a, no, no);                                
-             break;                                                                  
-
-          case 0x81:                                                                
-             /* LDMDA rn, rlist */                                                   
-             arm_block_memory(load, down_a, no, no);                                 
-             break;                                                                  
-
-          case 0x82:                                                                
-             /* STMDA rn!, rlist */                                                  
-             arm_block_memory(store, down_a, down, no);                              
-             break;                                                                  
-
-          case 0x83:                                                                
-             /* LDMDA rn!, rlist */                                                  
-             arm_block_memory(load, down_a, down, no);                               
-             break;                                                                  
-
-          case 0x84:                                                                
-             /* STMDA rn, rlist^ */                                                  
-             arm_block_memory(store, down_a, no, yes);                               
-             break;                                                                  
-
-          case 0x85:                                                                
-             /* LDMDA rn, rlist^ */                                                  
-             arm_block_memory(load, down_a, no, yes);                                
-             break;                                                                  
-
-          case 0x86:                                                                
-             /* STMDA rn!, rlist^ */                                                 
-             arm_block_memory(store, down_a, down, yes);                             
-             break;                                                                  
-
-          case 0x87:                                                                
-             /* LDMDA rn!, rlist^ */                                                 
-             arm_block_memory(load, down_a, down, yes);                              
-             break;                                                                  
-
-          case 0x88:                                                                
-             /* STMIA rn, rlist */                                                   
-             arm_block_memory(store, no, no, no);                                    
-             break;                                                                  
-
-          case 0x89:                                                                
-             /* LDMIA rn, rlist */                                                   
-             arm_block_memory(load, no, no, no);                                     
-             break;                                                                  
-
-          case 0x8A:                                                                
-             /* STMIA rn!, rlist */                                                  
-             arm_block_memory(store, no, up, no);                                    
-             break;                                                                  
-
-          case 0x8B:                                                                
-             /* LDMIA rn!, rlist */                                                  
-             arm_block_memory(load, no, up, no);                                     
-             break;                                                                  
-
-          case 0x8C:                                                                
-             /* STMIA rn, rlist^ */                                                  
-             arm_block_memory(store, no, no, yes);                                   
-             break;                                                                  
-
-          case 0x8D:                                                                
-             /* LDMIA rn, rlist^ */                                                  
-             arm_block_memory(load, no, no, yes);                                    
-             break;                                                                  
-
-          case 0x8E:                                                                
-             /* STMIA rn!, rlist^ */                                                 
-             arm_block_memory(store, no, up, yes);                                   
-             break;                                                                  
-
-          case 0x8F:                                                                
-             /* LDMIA rn!, rlist^ */                                                 
-             arm_block_memory(load, no, up, yes);                                    
-             break;                                                                  
-
-          case 0x90:                                                                
-             /* STMDB rn, rlist */                                                   
-             arm_block_memory(store, down_b, no, no);                                
-             break;                                                                  
-
-          case 0x91:                                                                
-             /* LDMDB rn, rlist */                                                   
-             arm_block_memory(load, down_b, no, no);                                 
-             break;                                                                  
-
-          case 0x92:                                                                
-             /* STMDB rn!, rlist */                                                  
-             arm_block_memory(store, down_b, down, no);                              
-             break;                                                                  
-
-          case 0x93:                                                                
-             /* LDMDB rn!, rlist */                                                  
-             arm_block_memory(load, down_b, down, no);                               
-             break;                                                                  
-
-          case 0x94:                                                                
-             /* STMDB rn, rlist^ */                                                  
-             arm_block_memory(store, down_b, no, yes);                               
-             break;                                                                  
-
-          case 0x95:                                                                
-             /* LDMDB rn, rlist^ */                                                  
-             arm_block_memory(load, down_b, no, yes);                                
-             break;                                                                  
-
-          case 0x96:                                                                
-             /* STMDB rn!, rlist^ */                                                 
-             arm_block_memory(store, down_b, down, yes);                             
-             break;                                                                  
-
-          case 0x97:                                                                
-             /* LDMDB rn!, rlist^ */                                                 
-             arm_block_memory(load, down_b, down, yes);                              
-             break;                                                                  
-
-          case 0x98:                                                                
-             /* STMIB rn, rlist */                                                   
-             arm_block_memory(store, up, no, no);                                    
-             break;                                                                  
-
-          case 0x99:                                                                
-             /* LDMIB rn, rlist */                                                   
-             arm_block_memory(load, up, no, no);                                     
-             break;                                                                  
-
-          case 0x9A:                                                                
-             /* STMIB rn!, rlist */                                                  
-             arm_block_memory(store, up, up, no);                                    
-             break;                                                                  
-
-          case 0x9B:                                                                
-             /* LDMIB rn!, rlist */                                                  
-             arm_block_memory(load, up, up, no);                                     
-             break;                                                                  
-
-          case 0x9C:                                                                
-             /* STMIB rn, rlist^ */                                                  
-             arm_block_memory(store, up, no, yes);                                   
-             break;                                                                  
-
-          case 0x9D:                                                                
-             /* LDMIB rn, rlist^ */                                                  
-             arm_block_memory(load, up, no, yes);                                    
-             break;                                                                  
-
-          case 0x9E:                                                                
-             /* STMIB rn!, rlist^ */                                                 
-             arm_block_memory(store, up, up, yes);                                   
-             break;                                                                  
-
-          case 0x9F:                                                                
-             /* LDMIB rn!, rlist^ */                                                 
-             arm_block_memory(load, up, up, yes);                                    
-             break;                                                                  
-
-          case 0xA0:                                                                
-          case 0xA1:                                                                
-          case 0xA2:                                                                
-          case 0xA3:                                                                
-          case 0xA4:                                                                
-          case 0xA5:                                                                
-          case 0xA6:                                                                
-          case 0xA7:                                                                
-          case 0xA8:                                                                
-          case 0xA9:                                                                
-          case 0xAA:                                                                
-          case 0xAB:                                                                
-          case 0xAC:                                                                
-          case 0xAD:                                                                
-          case 0xAE:                                                                
-          case 0xAF:                                                                
-             {                                                                         
-                /* B offset */                                                          
-                arm_decode_branch();                                                    
-                arm_pc_offset_update(offset + 8);                                       
-                break;                                                                  
-             }                                                                         
-
-          case 0xB0:
-          case 0xB1:
-          case 0xB2:
-          case 0xB3:
-          case 0xB4:
-          case 0xB5:
-          case 0xB6:
-          case 0xB7:
-          case 0xB8:
-          case 0xB9:
-          case 0xBA:
-          case 0xBB:
-          case 0xBC:
-          case 0xBD:
-          case 0xBE:
-          case 0xBF:                                                       
-             {                                                                         
-                /* BL offset */                                                         
-                arm_decode_branch();                                                    
-                reg[REG_LR] = pc + 4;                                                   
-                arm_pc_offset_update(offset + 8);                                       
-                break;                                                                  
-             }                                                                         
+          case 0x35:
+             /* CMP rn, imm */
+             arm_data_proc_test_sub(reg[rn], imm, imm);
+             break;
+
+          case 0x36:
+             /* MSR spsr, imm */
+             arm_psr(imm, store, spsr);
+             break;
+
+          case 0x37:
+             /* CMN rn, imm */
+             arm_data_proc_test_add(reg[rn], imm, imm);
+             break;
+
+          case 0x38:
+             /* ORR rd, rn, imm */
+             arm_data_proc(reg[rn] | imm, imm);
+             break;
+
+          case 0x39:
+             /* ORRS rd, rn, imm */
+             arm_data_proc_logic_flags(reg[rn] | imm, imm);
+             break;
+
+          case 0x3A:
+             /* MOV rd, imm */
+             arm_data_proc(imm, imm);
+             break;
+
+          case 0x3B:
+             /* MOVS rd, imm */
+             arm_data_proc_logic_flags(imm, imm);
+             break;
+
+          case 0x3C:
+             /* BIC rd, rn, imm */
+             arm_data_proc(reg[rn] & (~imm), imm);
+             break;
+
+          case 0x3D:
+             /* BICS rd, rn, imm */
+             arm_data_proc_logic_flags(reg[rn] & (~imm), imm);
+             break;
+
+          case 0x3E:
+             /* MVN rd, imm */
+             arm_data_proc(~imm, imm);
+             break;
+
+          case 0x3F:
+             /* MVNS rd, imm */
+             arm_data_proc_logic_flags(~imm, imm);
+             break;
+
+          case 0x40:
+             /* STR rd, [rn], -imm */
+             arm_access_memory(store, no_op, imm, u32, yes, - offset);
+             break;
+
+          case 0x41:
+             /* LDR rd, [rn], -imm */
+             arm_access_memory(load, no_op, imm, u32, yes, - offset);
+             break;
+
+          case 0x42:
+             /* STRT rd, [rn], -imm */
+             arm_access_memory(store, no_op, imm, u32, yes, - offset);
+             break;
+
+          case 0x43:
+             /* LDRT rd, [rn], -imm */
+             arm_access_memory(load, no_op, imm, u32, yes, - offset);
+             break;
+
+          case 0x44:
+             /* STRB rd, [rn], -imm */
+             arm_access_memory(store, no_op, imm, u8, yes, - offset);
+             break;
+
+          case 0x45:
+             /* LDRB rd, [rn], -imm */
+             arm_access_memory(load, no_op, imm, u8, yes, - offset);
+             break;
+
+          case 0x46:
+             /* STRBT rd, [rn], -imm */
+             arm_access_memory(store, no_op, imm, u8, yes, - offset);
+             break;
+
+          case 0x47:
+             /* LDRBT rd, [rn], -imm */
+             arm_access_memory(load, no_op, imm, u8, yes, - offset);
+             break;
+
+          case 0x48:
+             /* STR rd, [rn], +imm */
+             arm_access_memory(store, no_op, imm, u32, yes, + offset);
+             break;
+
+          case 0x49:
+             /* LDR rd, [rn], +imm */
+             arm_access_memory(load, no_op, imm, u32, yes, + offset);
+             break;
+
+          case 0x4A:
+             /* STRT rd, [rn], +imm */
+             arm_access_memory(store, no_op, imm, u32, yes, + offset);
+             break;
+
+          case 0x4B:
+             /* LDRT rd, [rn], +imm */
+             arm_access_memory(load, no_op, imm, u32, yes, + offset);
+             break;
+
+          case 0x4C:
+             /* STRB rd, [rn], +imm */
+             arm_access_memory(store, no_op, imm, u8, yes, + offset);
+             break;
+
+          case 0x4D:
+             /* LDRB rd, [rn], +imm */
+             arm_access_memory(load, no_op, imm, u8, yes, + offset);
+             break;
+
+          case 0x4E:
+             /* STRBT rd, [rn], +imm */
+             arm_access_memory(store, no_op, imm, u8, yes, + offset);
+             break;
+
+          case 0x4F:
+             /* LDRBT rd, [rn], +imm */
+             arm_access_memory(load, no_op, imm, u8, yes, + offset);
+             break;
+
+          case 0x50:
+             /* STR rd, [rn - imm] */
+             arm_access_memory(store, - offset, imm, u32, no, no_op);
+             break;
+
+          case 0x51:
+             /* LDR rd, [rn - imm] */
+             arm_access_memory(load, - offset, imm, u32, no, no_op);
+             break;
+
+          case 0x52:
+             /* STR rd, [rn - imm]! */
+             arm_access_memory(store, - offset, imm, u32, yes, no_op);
+             break;
+
+          case 0x53:
+             /* LDR rd, [rn - imm]! */
+             arm_access_memory(load, - offset, imm, u32, yes, no_op);
+             break;
+
+          case 0x54:
+             /* STRB rd, [rn - imm] */
+             arm_access_memory(store, - offset, imm, u8, no, no_op);
+             break;
+
+          case 0x55:
+             /* LDRB rd, [rn - imm] */
+             arm_access_memory(load, - offset, imm, u8, no, no_op);
+             break;
+
+          case 0x56:
+             /* STRB rd, [rn - imm]! */
+             arm_access_memory(store, - offset, imm, u8, yes, no_op);
+             break;
+
+          case 0x57:
+             /* LDRB rd, [rn - imm]! */
+             arm_access_memory(load, - offset, imm, u8, yes, no_op);
+             break;
+
+          case 0x58:
+             /* STR rd, [rn + imm] */
+             arm_access_memory(store, + offset, imm, u32, no, no_op);
+             break;
+
+          case 0x59:
+             /* LDR rd, [rn + imm] */
+             arm_access_memory(load, + offset, imm, u32, no, no_op);
+             break;
+
+          case 0x5A:
+             /* STR rd, [rn + imm]! */
+             arm_access_memory(store, + offset, imm, u32, yes, no_op);
+             break;
+
+          case 0x5B:
+             /* LDR rd, [rn + imm]! */
+             arm_access_memory(load, + offset, imm, u32, yes, no_op);
+             break;
+
+          case 0x5C:
+             /* STRB rd, [rn + imm] */
+             arm_access_memory(store, + offset, imm, u8, no, no_op);
+             break;
+
+          case 0x5D:
+             /* LDRB rd, [rn + imm] */
+             arm_access_memory(load, + offset, imm, u8, no, no_op);
+             break;
+
+          case 0x5E:
+             /* STRB rd, [rn + imm]! */
+             arm_access_memory(store, + offset, imm, u8, yes, no_op);
+             break;
+
+          case 0x5F:
+             /* LDRBT rd, [rn + imm]! */
+             arm_access_memory(load, + offset, imm, u8, yes, no_op);
+             break;
+
+          case 0x60:
+             /* STR rd, [rn], -reg_op */
+             arm_access_memory(store, no_op, reg, u32, yes, - reg_offset);
+             break;
+
+          case 0x61:
+             /* LDR rd, [rn], -reg_op */
+             arm_access_memory(load, no_op, reg, u32, yes, - reg_offset);
+             break;
+
+          case 0x62:
+             /* STRT rd, [rn], -reg_op */
+             arm_access_memory(store, no_op, reg, u32, yes, - reg_offset);
+             break;
+
+          case 0x63:
+             /* LDRT rd, [rn], -reg_op */
+             arm_access_memory(load, no_op, reg, u32, yes, - reg_offset);
+             break;
+
+          case 0x64:
+             /* STRB rd, [rn], -reg_op */
+             arm_access_memory(store, no_op, reg, u8, yes, - reg_offset);
+             break;
+
+          case 0x65:
+             /* LDRB rd, [rn], -reg_op */
+             arm_access_memory(load, no_op, reg, u8, yes, - reg_offset);
+             break;
+
+          case 0x66:
+             /* STRBT rd, [rn], -reg_op */
+             arm_access_memory(store, no_op, reg, u8, yes, - reg_offset);
+             break;
+
+          case 0x67:
+             /* LDRBT rd, [rn], -reg_op */
+             arm_access_memory(load, no_op, reg, u8, yes, - reg_offset);
+             break;
+
+          case 0x68:
+             /* STR rd, [rn], +reg_op */
+             arm_access_memory(store, no_op, reg, u32, yes, + reg_offset);
+             break;
+
+          case 0x69:
+             /* LDR rd, [rn], +reg_op */
+             arm_access_memory(load, no_op, reg, u32, yes, + reg_offset);
+             break;
+
+          case 0x6A:
+             /* STRT rd, [rn], +reg_op */
+             arm_access_memory(store, no_op, reg, u32, yes, + reg_offset);
+             break;
+
+          case 0x6B:
+             /* LDRT rd, [rn], +reg_op */
+             arm_access_memory(load, no_op, reg, u32, yes, + reg_offset);
+             break;
+
+          case 0x6C:
+             /* STRB rd, [rn], +reg_op */
+             arm_access_memory(store, no_op, reg, u8, yes, + reg_offset);
+             break;
+
+          case 0x6D:
+             /* LDRB rd, [rn], +reg_op */
+             arm_access_memory(load, no_op, reg, u8, yes, + reg_offset);
+             break;
+
+          case 0x6E:
+             /* STRBT rd, [rn], +reg_op */
+             arm_access_memory(store, no_op, reg, u8, yes, + reg_offset);
+             break;
+
+          case 0x6F:
+             /* LDRBT rd, [rn], +reg_op */
+             arm_access_memory(load, no_op, reg, u8, yes, + reg_offset);
+             break;
+
+          case 0x70:
+             /* STR rd, [rn - reg_op] */
+             arm_access_memory(store, - reg_offset, reg, u32, no, no_op);
+             break;
+
+          case 0x71:
+             /* LDR rd, [rn - reg_op] */
+             arm_access_memory(load, - reg_offset, reg, u32, no, no_op);
+             break;
+
+          case 0x72:
+             /* STR rd, [rn - reg_op]! */
+             arm_access_memory(store, - reg_offset, reg, u32, yes, no_op);
+             break;
+
+          case 0x73:
+             /* LDR rd, [rn - reg_op]! */
+             arm_access_memory(load, - reg_offset, reg, u32, yes, no_op);
+             break;
+
+          case 0x74:
+             /* STRB rd, [rn - reg_op] */
+             arm_access_memory(store, - reg_offset, reg, u8, no, no_op);
+             break;
+
+          case 0x75:
+             /* LDRB rd, [rn - reg_op] */
+             arm_access_memory(load, - reg_offset, reg, u8, no, no_op);
+             break;
+
+          case 0x76:
+             /* STRB rd, [rn - reg_op]! */
+             arm_access_memory(store, - reg_offset, reg, u8, yes, no_op);
+             break;
+
+          case 0x77:
+             /* LDRB rd, [rn - reg_op]! */
+             arm_access_memory(load, - reg_offset, reg, u8, yes, no_op);
+             break;
+
+          case 0x78:
+             /* STR rd, [rn + reg_op] */
+             arm_access_memory(store, + reg_offset, reg, u32, no, no_op);
+             break;
+
+          case 0x79:
+             /* LDR rd, [rn + reg_op] */
+             arm_access_memory(load, + reg_offset, reg, u32, no, no_op);
+             break;
+
+          case 0x7A:
+             /* STR rd, [rn + reg_op]! */
+             arm_access_memory(store, + reg_offset, reg, u32, yes, no_op);
+             break;
+
+          case 0x7B:
+             /* LDR rd, [rn + reg_op]! */
+             arm_access_memory(load, + reg_offset, reg, u32, yes, no_op);
+             break;
+
+          case 0x7C:
+             /* STRB rd, [rn + reg_op] */
+             arm_access_memory(store, + reg_offset, reg, u8, no, no_op);
+             break;
+
+          case 0x7D:
+             /* LDRB rd, [rn + reg_op] */
+             arm_access_memory(load, + reg_offset, reg, u8, no, no_op);
+             break;
+
+          case 0x7E:
+             /* STRB rd, [rn + reg_op]! */
+             arm_access_memory(store, + reg_offset, reg, u8, yes, no_op);
+             break;
+
+          case 0x7F:
+             /* LDRBT rd, [rn + reg_op]! */
+             arm_access_memory(load, + reg_offset, reg, u8, yes, no_op);
+             break;
+
+          case 0x80:
+             /* STMDA rn, rlist */
+             arm_block_memory(store, down_a, no, no);
+             break;
+
+          case 0x81:
+             /* LDMDA rn, rlist */
+             arm_block_memory(load, down_a, no, no);
+             break;
+
+          case 0x82:
+             /* STMDA rn!, rlist */
+             arm_block_memory(store, down_a, down, no);
+             break;
+
+          case 0x83:
+             /* LDMDA rn!, rlist */
+             arm_block_memory(load, down_a, down, no);
+             break;
+
+          case 0x84:
+             /* STMDA rn, rlist^ */
+             arm_block_memory(store, down_a, no, yes);
+             break;
+
+          case 0x85:
+             /* LDMDA rn, rlist^ */
+             arm_block_memory(load, down_a, no, yes);
+             break;
+
+          case 0x86:
+             /* STMDA rn!, rlist^ */
+             arm_block_memory(store, down_a, down, yes);
+             break;
+
+          case 0x87:
+             /* LDMDA rn!, rlist^ */
+             arm_block_memory(load, down_a, down, yes);
+             break;
+
+          case 0x88:
+             /* STMIA rn, rlist */
+             arm_block_memory(store, no, no, no);
+             break;
+
+          case 0x89:
+             /* LDMIA rn, rlist */
+             arm_block_memory(load, no, no, no);
+             break;
+
+          case 0x8A:
+             /* STMIA rn!, rlist */
+             arm_block_memory(store, no, up, no);
+             break;
+
+          case 0x8B:
+             /* LDMIA rn!, rlist */
+             arm_block_memory(load, no, up, no);
+             break;
+
+          case 0x8C:
+             /* STMIA rn, rlist^ */
+             arm_block_memory(store, no, no, yes);
+             break;
+
+          case 0x8D:
+             /* LDMIA rn, rlist^ */
+             arm_block_memory(load, no, no, yes);
+             break;
+
+          case 0x8E:
+             /* STMIA rn!, rlist^ */
+             arm_block_memory(store, no, up, yes);
+             break;
+
+          case 0x8F:
+             /* LDMIA rn!, rlist^ */
+             arm_block_memory(load, no, up, yes);
+             break;
+
+          case 0x90:
+             /* STMDB rn, rlist */
+             arm_block_memory(store, down_b, no, no);
+             break;
+
+          case 0x91:
+             /* LDMDB rn, rlist */
+             arm_block_memory(load, down_b, no, no);
+             break;
+
+          case 0x92:
+             /* STMDB rn!, rlist */
+             arm_block_memory(store, down_b, down, no);
+             break;
+
+          case 0x93:
+             /* LDMDB rn!, rlist */
+             arm_block_memory(load, down_b, down, no);
+             break;
+
+          case 0x94:
+             /* STMDB rn, rlist^ */
+             arm_block_memory(store, down_b, no, yes);
+             break;
+
+          case 0x95:
+             /* LDMDB rn, rlist^ */
+             arm_block_memory(load, down_b, no, yes);
+             break;
+
+          case 0x96:
+             /* STMDB rn!, rlist^ */
+             arm_block_memory(store, down_b, down, yes);
+             break;
+
+          case 0x97:
+             /* LDMDB rn!, rlist^ */
+             arm_block_memory(load, down_b, down, yes);
+             break;
+
+          case 0x98:
+             /* STMIB rn, rlist */
+             arm_block_memory(store, up, no, no);
+             break;
+
+          case 0x99:
+             /* LDMIB rn, rlist */
+             arm_block_memory(load, up, no, no);
+             break;
+
+          case 0x9A:
+             /* STMIB rn!, rlist */
+             arm_block_memory(store, up, up, no);
+             break;
+
+          case 0x9B:
+             /* LDMIB rn!, rlist */
+             arm_block_memory(load, up, up, no);
+             break;
+
+          case 0x9C:
+             /* STMIB rn, rlist^ */
+             arm_block_memory(store, up, no, yes);
+             break;
+
+          case 0x9D:
+             /* LDMIB rn, rlist^ */
+             arm_block_memory(load, up, no, yes);
+             break;
+
+          case 0x9E:
+             /* STMIB rn!, rlist^ */
+             arm_block_memory(store, up, up, yes);
+             break;
+
+          case 0x9F:
+             /* LDMIB rn!, rlist^ */
+             arm_block_memory(load, up, up, yes);
+             break;
+
+          case 0xA0 ... 0xAF:
+             {
+                /* B offset */
+                arm_decode_branch();
+                arm_pc_offset_update(offset + 8);
+                break;
+             }
+
+          case 0xB0 ... 0xBF:
+             {
+                /* BL offset */
+                arm_decode_branch();
+                reg[REG_LR] = pc + 4;
+                arm_pc_offset_update(offset + 8);
+                break;
+             }
 
 #ifdef HAVE_UNUSED
-          case 0xC0 ... 0xEF:                                                       
-             /* coprocessor instructions, reserved on GBA */                         
-             break;                                                                  
+          case 0xC0 ... 0xEF:
+             /* coprocessor instructions, reserved on GBA */
+             break;
 #endif
 
-          case 0xF0:
-          case 0xF1:
-          case 0xF2:
-          case 0xF3:
-          case 0xF4:
-          case 0xF5:
-          case 0xF6:
-          case 0xF7:
-          case 0xF8:
-          case 0xF9:
-          case 0xFA:
-          case 0xFB:
-          case 0xFC:
-          case 0xFD:
-          case 0xFE:
-          case 0xFF:                                                       
-             {                                                                         
-                /* SWI comment */                                                       
-                u32 swi_comment = opcode & 0x00FFFFFF;                                  
+          case 0xF0 ... 0xFF:
+             {
+                /* SWI comment */
+                u32 swi_comment = opcode & 0x00FFFFFF;
 
-                switch(swi_comment >> 16)                                               
-                {                                                                       
-                   /* Jump to BIOS SWI handler */                                        
-                   default:                                                              
-                      reg_mode[MODE_SUPERVISOR][6] = pc + 4;                              
-                      collapse_flags();                                                   
-                      spsr[MODE_SUPERVISOR] = reg[REG_CPSR];                              
-                      reg[REG_PC] = 0x00000008;                                           
-                      arm_update_pc();                                                    
-                      reg[REG_CPSR] = (reg[REG_CPSR] & ~0x1F) | 0x13;                     
-                      set_cpu_mode(MODE_SUPERVISOR);                                      
-                      break;                                                              
-                }                                                                       
-                break;                                                                  
-             }                                                                         
-       }                                                                           
+                switch(swi_comment >> 16)
+                {
+                   /* Jump to BIOS SWI handler */
+                   default:
+                      reg_mode[MODE_SUPERVISOR][6] = pc + 4;
+                      collapse_flags();
+                      spsr[MODE_SUPERVISOR] = reg[REG_CPSR];
+                      reg[REG_PC] = 0x00000008;
+                      arm_update_pc();
+                      reg[REG_CPSR] = (reg[REG_CPSR] & ~0x1F) | 0x13;
+                      set_cpu_mode(MODE_SUPERVISOR);
+                      break;
+                }
+                break;
+             }
+       }
 
-skip_instruction:                                                           
+skip_instruction:
 
        /* End of Execute ARM instruction */
        cycles_remaining -= cycles_per_instruction;
@@ -3292,7 +3242,9 @@ skip_instruction:
     } while(cycles_remaining > 0);
 
     collapse_flags();
-    cycles = update_gba();
+    cycles_remaining = update_gba();
+    if (reg[COMPLETED_FRAME])
+       return;
     continue;
 
     do
@@ -3301,958 +3253,493 @@ thumb_loop:
 
        collapse_flags();
 
+       /* Process cheats if we are about to execute the cheat hook */
+       if (pc == cheat_master_hook)
+          process_cheats();
+
        old_pc = pc;
 
        /* Execute THUMB instruction */
 
-       using_instruction(thumb);                                                   
-       check_pc_region();                                                          
-       pc &= ~0x01;                                                                
-       opcode = address16(pc_address_block, (pc & 0x7FFF));                        
+       using_instruction(thumb);
+       check_pc_region();
+       pc &= ~0x01;
+       opcode = address16(pc_address_block, (pc & 0x7FFF));
 
-       switch((opcode >> 8) & 0xFF)                                                
-       {                                                                           
-          case 0x00:
-          case 0x01:
-          case 0x02:
-          case 0x03:
-          case 0x04:
-          case 0x05:
-          case 0x06:
-          case 0x07:                                                       
-             /* LSL rd, rs, offset */                                                
-             thumb_shift(shift, lsl, imm);                                           
-             break;                                                                  
+       switch((opcode >> 8) & 0xFF)
+       {
+          case 0x00 ... 0x07:
+             /* LSL rd, rs, offset */
+             thumb_shift(shift, lsl, imm);
+             break;
 
-          case 0x08:
-          case 0x09:
-          case 0x0A:
-          case 0x0B:
-          case 0x0C:
-          case 0x0D:
-          case 0x0E:
-          case 0x0F:                                                       
-             /* LSR rd, rs, offset */                                                
-             thumb_shift(shift, lsr, imm);                                           
-             break;                                                                  
+          case 0x08 ... 0x0F:
+             /* LSR rd, rs, offset */
+             thumb_shift(shift, lsr, imm);
+             break;
 
-          case 0x10:
-          case 0x11:
-          case 0x12:
-          case 0x13:
-          case 0x14:
-          case 0x15:
-          case 0x16:
-          case 0x17:                                                       
-             /* ASR rd, rs, offset */                                                
-             thumb_shift(shift, asr, imm);                                           
-             break;                                                                  
+          case 0x10 ... 0x17:
+             /* ASR rd, rs, offset */
+             thumb_shift(shift, asr, imm);
+             break;
 
           case 0x18:
-          case 0x19:                                                       
-             /* ADD rd, rs, rn */                                                    
-             thumb_add(add_sub, rd, reg[rs], reg[rn]);                               
-             break;                                                                  
+          case 0x19:
+             /* ADD rd, rs, rn */
+             thumb_add(add_sub, rd, reg[rs], reg[rn]);
+             break;
 
           case 0x1A:
-          case 0x1B:                                                       
-             /* SUB rd, rs, rn */                                                    
-             thumb_sub(add_sub, rd, reg[rs], reg[rn]);                               
-             break;                                                                  
+          case 0x1B:
+             /* SUB rd, rs, rn */
+             thumb_sub(add_sub, rd, reg[rs], reg[rn]);
+             break;
 
           case 0x1C:
-          case 0x1D:                                                       
-             /* ADD rd, rs, imm */                                                   
-             thumb_add(add_sub_imm, rd, reg[rs], imm);                               
-             break;                                                                  
+          case 0x1D:
+             /* ADD rd, rs, imm */
+             thumb_add(add_sub_imm, rd, reg[rs], imm);
+             break;
 
           case 0x1E:
-          case 0x1F:                                                       
-             /* SUB rd, rs, imm */                                                   
-             thumb_sub(add_sub_imm, rd, reg[rs], imm);                               
-             break;                                                                  
+          case 0x1F:
+             /* SUB rd, rs, imm */
+             thumb_sub(add_sub_imm, rd, reg[rs], imm);
+             break;
 
-          case 0x20:                                                                
-             /* MOV r0, imm */                                                       
-             thumb_logic(imm, 0, imm);                                               
-             break;                                                                  
+          case 0x20 ... 0x27:
+             /* MOV r0..7, imm */
+             thumb_logic(imm, ((opcode >> 8) & 7), imm);
+             break;
 
-          case 0x21:                                                                
-             /* MOV r1, imm */                                                       
-             thumb_logic(imm, 1, imm);                                               
-             break;                                                                  
+          case 0x28 ... 0x2F:
+             /* CMP r0..7, imm */
+             thumb_test_sub(imm, reg[(opcode >> 8) & 7], imm);
+             break;
 
-          case 0x22:                                                                
-             /* MOV r2, imm */                                                       
-             thumb_logic(imm, 2, imm);                                               
-             break;                                                                  
+          case 0x30 ... 0x37:
+             /* ADD r0..7, imm */
+             thumb_add(imm, ((opcode >> 8) & 7), reg[(opcode >> 8) & 7], imm);
+             break;
 
-          case 0x23:                                                                
-             /* MOV r3, imm */                                                       
-             thumb_logic(imm, 3, imm);                                               
-             break;                                                                  
+          case 0x38 ... 0x3F:
+             /* SUB r0..7, imm */
+             thumb_sub(imm, ((opcode >> 8) & 7), reg[(opcode >> 8) & 7], imm);
+             break;
 
-          case 0x24:                                                                
-             /* MOV r4, imm */                                                       
-             thumb_logic(imm, 4, imm);                                               
-             break;                                                                  
+          case 0x40:
+             switch((opcode >> 6) & 0x03)
+             {
+                case 0x00:
+                   /* AND rd, rs */
+                   thumb_logic(alu_op, rd, reg[rd] & reg[rs]);
+                   break;
 
-          case 0x25:                                                                
-             /* MOV r5, imm */                                                       
-             thumb_logic(imm, 5, imm);                                               
-             break;                                                                  
+                case 0x01:
+                   /* EOR rd, rs */
+                   thumb_logic(alu_op, rd, reg[rd] ^ reg[rs]);
+                   break;
 
-          case 0x26:                                                                
-             /* MOV r6, imm */                                                       
-             thumb_logic(imm, 6, imm);                                               
-             break;                                                                  
+                case 0x02:
+                   /* LSL rd, rs */
+                   thumb_shift(alu_op, lsl, reg);
+                   break;
 
-          case 0x27:                                                                
-             /* MOV r7, imm */                                                       
-             thumb_logic(imm, 7, imm);                                               
-             break;                                                                  
+                case 0x03:
+                   /* LSR rd, rs */
+                   thumb_shift(alu_op, lsr, reg);
+                   break;
+             }
+             break;
 
-          case 0x28:                                                                
-             /* CMP r0, imm */                                                       
-             thumb_test_sub(imm, reg[0], imm);                                       
-             break;                                                                  
+          case 0x41:
+             switch((opcode >> 6) & 0x03)
+             {
+                case 0x00:
+                   /* ASR rd, rs */
+                   thumb_shift(alu_op, asr, reg);
+                   break;
 
-          case 0x29:                                                                
-             /* CMP r1, imm */                                                       
-             thumb_test_sub(imm, reg[1], imm);                                       
-             break;                                                                  
+                case 0x01:
+                   /* ADC rd, rs */
+                   thumb_add(alu_op, rd, reg[rd] + reg[rs], c_flag);
+                   break;
 
-          case 0x2A:                                                                
-             /* CMP r2, imm */                                                       
-             thumb_test_sub(imm, reg[2], imm);                                       
-             break;                                                                  
+                case 0x02:
+                   /* SBC rd, rs */
+                   thumb_sub(alu_op, rd, reg[rd] - reg[rs], (c_flag ^ 1));
+                   break;
 
-          case 0x2B:                                                                
-             /* CMP r3, imm */                                                       
-             thumb_test_sub(imm, reg[3], imm);                                       
-             break;                                                                  
+                case 0x03:
+                   /* ROR rd, rs */
+                   thumb_shift(alu_op, ror, reg);
+                   break;
+             }
+             break;
 
-          case 0x2C:                                                                
-             /* CMP r4, imm */                                                       
-             thumb_test_sub(imm, reg[4], imm);                                       
-             break;                                                                  
+          case 0x42:
+             switch((opcode >> 6) & 0x03)
+             {
+                case 0x00:
+                   /* TST rd, rs */
+                   thumb_test_logic(alu_op, reg[rd] & reg[rs]);
+                   break;
 
-          case 0x2D:                                                                
-             /* CMP r5, imm */                                                       
-             thumb_test_sub(imm, reg[5], imm);                                       
-             break;                                                                  
+                case 0x01:
+                   /* NEG rd, rs */
+                   thumb_sub(alu_op, rd, 0, reg[rs]);
+                   break;
 
-          case 0x2E:                                                                
-             /* CMP r6, imm */                                                       
-             thumb_test_sub(imm, reg[6], imm);                                       
-             break;                                                                  
+                case 0x02:
+                   /* CMP rd, rs */
+                   thumb_test_sub(alu_op, reg[rd], reg[rs]);
+                   break;
 
-          case 0x2F:                                                                
-             /* CMP r7, imm */                                                       
-             thumb_test_sub(imm, reg[7], imm);                                       
-             break;                                                                  
+                case 0x03:
+                   /* CMN rd, rs */
+                   thumb_test_add(alu_op, reg[rd], reg[rs]);
+                   break;
+             }
+             break;
 
-          case 0x30:                                                                
-             /* ADD r0, imm */                                                       
-             thumb_add(imm, 0, reg[0], imm);                                         
-             break;                                                                  
+          case 0x43:
+             switch((opcode >> 6) & 0x03)
+             {
+                case 0x00:
+                   /* ORR rd, rs */
+                   thumb_logic(alu_op, rd, reg[rd] | reg[rs]);
+                   break;
 
-          case 0x31:                                                                
-             /* ADD r1, imm */                                                       
-             thumb_add(imm, 1, reg[1], imm);                                         
-             break;                                                                  
+                case 0x01:
+                   /* MUL rd, rs */
+                   thumb_logic(alu_op, rd, reg[rd] * reg[rs]);
+                   break;
 
-          case 0x32:                                                                
-             /* ADD r2, imm */                                                       
-             thumb_add(imm, 2, reg[2], imm);                                         
-             break;                                                                  
+                case 0x02:
+                   /* BIC rd, rs */
+                   thumb_logic(alu_op, rd, reg[rd] & (~reg[rs]));
+                   break;
 
-          case 0x33:                                                                
-             /* ADD r3, imm */                                                       
-             thumb_add(imm, 3, reg[3], imm);                                         
-             break;                                                                  
+                case 0x03:
+                   /* MVN rd, rs */
+                   thumb_logic(alu_op, rd, ~reg[rs]);
+                   break;
+             }
+             break;
 
-          case 0x34:                                                                
-             /* ADD r4, imm */                                                       
-             thumb_add(imm, 4, reg[4], imm);                                         
-             break;                                                                  
+          case 0x44:
+             /* ADD rd, rs */
+             thumb_hireg_op(reg[rd] + reg[rs]);
+             break;
 
-          case 0x35:                                                                
-             /* ADD r5, imm */                                                       
-             thumb_add(imm, 5, reg[5], imm);                                         
-             break;                                                                  
+          case 0x45:
+             /* CMP rd, rs */
+             {
+                thumb_pc_offset(4);
+                thumb_decode_hireg_op();
+                u32 _sa = reg[rd];
+                u32 _sb = reg[rs];
+                u32 dest = _sa - _sb;
+                thumb_pc_offset(-2);
+                calculate_flags_sub(dest, _sa, _sb);
+             }
+             break;
 
-          case 0x36:                                                                
-             /* ADD r6, imm */                                                       
-             thumb_add(imm, 6, reg[6], imm);                                         
-             break;                                                                  
+          case 0x46:
+             /* MOV rd, rs */
+             thumb_hireg_op(reg[rs]);
+             break;
 
-          case 0x37:                                                                
-             /* ADD r7, imm */                                                       
-             thumb_add(imm, 7, reg[7], imm);                                         
-             break;                                                                  
+          case 0x47:
+             /* BX rs */
+             {
+                thumb_decode_hireg_op();
+                u32 src;
+                thumb_pc_offset(4);
+                src = reg[rs];
+                if(src & 0x01)
+                {
+                   src -= 1;
+                   thumb_pc_offset_update_direct(src);
+                }
+                else
+                {
+                   /* Switch to ARM mode */
+                   thumb_pc_offset_update_direct(src);
+                   reg[REG_CPSR] &= ~0x20;
+                   collapse_flags();
+                   goto arm_loop;
+                }
+             }
+             break;
 
-          case 0x38:                                                                
-             /* SUB r0, imm */                                                       
-             thumb_sub(imm, 0, reg[0], imm);                                         
-             break;                                                                  
-
-          case 0x39:                                                                
-             /* SUB r1, imm */                                                       
-             thumb_sub(imm, 1, reg[1], imm);                                         
-             break;                                                                  
-
-          case 0x3A:                                                                
-             /* SUB r2, imm */                                                       
-             thumb_sub(imm, 2, reg[2], imm);                                         
-             break;                                                                  
-
-          case 0x3B:                                                                
-             /* SUB r3, imm */                                                       
-             thumb_sub(imm, 3, reg[3], imm);                                         
-             break;                                                                  
-
-          case 0x3C:                                                                
-             /* SUB r4, imm */                                                       
-             thumb_sub(imm, 4, reg[4], imm);                                         
-             break;                                                                  
-
-          case 0x3D:                                                                
-             /* SUB r5, imm */                                                       
-             thumb_sub(imm, 5, reg[5], imm);                                         
-             break;                                                                  
-
-          case 0x3E:                                                                
-             /* SUB r6, imm */                                                       
-             thumb_sub(imm, 6, reg[6], imm);                                         
-             break;                                                                  
-
-          case 0x3F:                                                                
-             /* SUB r7, imm */                                                       
-             thumb_sub(imm, 7, reg[7], imm);                                         
-             break;                                                                  
-
-          case 0x40:                                                                
-             switch((opcode >> 6) & 0x03)                                            
-             {                                                                       
-                case 0x00:                                                            
-                   /* AND rd, rs */                                                    
-                   thumb_logic(alu_op, rd, reg[rd] & reg[rs]);                         
-                   break;                                                              
-
-                case 0x01:                                                            
-                   /* EOR rd, rs */                                                    
-                   thumb_logic(alu_op, rd, reg[rd] ^ reg[rs]);                         
-                   break;                                                              
-
-                case 0x02:                                                            
-                   /* LSL rd, rs */                                                    
-                   thumb_shift(alu_op, lsl, reg);                                      
-                   break;                                                              
-
-                case 0x03:                                                            
-                   /* LSR rd, rs */                                                    
-                   thumb_shift(alu_op, lsr, reg);                                      
-                   break;                                                              
-             }                                                                       
-             break;                                                                  
-
-          case 0x41:                                                                
-             switch((opcode >> 6) & 0x03)                                            
-             {                                                                       
-                case 0x00:                                                            
-                   /* ASR rd, rs */                                                    
-                   thumb_shift(alu_op, asr, reg);                                      
-                   break;                                                              
-
-                case 0x01:                                                            
-                   /* ADC rd, rs */                                                    
-                   thumb_add(alu_op, rd, reg[rd] + reg[rs], c_flag);                   
-                   break;                                                              
-
-                case 0x02:                                                            
-                   /* SBC rd, rs */                                                    
-                   thumb_sub(alu_op, rd, reg[rd] - reg[rs], (c_flag ^ 1));             
-                   break;                                                              
-
-                case 0x03:                                                            
-                   /* ROR rd, rs */                                                    
-                   thumb_shift(alu_op, ror, reg);                                      
-                   break;                                                              
-             }                                                                       
-             break;                                                                  
-
-          case 0x42:                                                                
-             switch((opcode >> 6) & 0x03)                                            
-             {                                                                       
-                case 0x00:                                                            
-                   /* TST rd, rs */                                                    
-                   thumb_test_logic(alu_op, reg[rd] & reg[rs]);                        
-                   break;                                                              
-
-                case 0x01:                                                            
-                   /* NEG rd, rs */                                                    
-                   thumb_sub(alu_op, rd, 0, reg[rs]);                                  
-                   break;                                                              
-
-                case 0x02:                                                            
-                   /* CMP rd, rs */                                                    
-                   thumb_test_sub(alu_op, reg[rd], reg[rs]);                           
-                   break;                                                              
-
-                case 0x03:                                                            
-                   /* CMN rd, rs */                                                    
-                   thumb_test_add(alu_op, reg[rd], reg[rs]);                           
-                   break;                                                              
-             }                                                                       
-             break;                                                                  
-
-          case 0x43:                                                                
-             switch((opcode >> 6) & 0x03)                                            
-             {                                                                       
-                case 0x00:                                                            
-                   /* ORR rd, rs */                                                    
-                   thumb_logic(alu_op, rd, reg[rd] | reg[rs]);                         
-                   break;                                                              
-
-                case 0x01:                                                            
-                   /* MUL rd, rs */                                                    
-                   thumb_logic(alu_op, rd, reg[rd] * reg[rs]);                         
-                   break;                                                              
-
-                case 0x02:                                                            
-                   /* BIC rd, rs */                                                    
-                   thumb_logic(alu_op, rd, reg[rd] & (~reg[rs]));                      
-                   break;                                                              
-
-                case 0x03:                                                            
-                   /* MVN rd, rs */                                                    
-                   thumb_logic(alu_op, rd, ~reg[rs]);                                  
-                   break;                                                              
-             }                                                                       
-             break;                                                                  
-
-          case 0x44:                                                                
-             /* ADD rd, rs */                                                        
-             thumb_hireg_op(reg[rd] + reg[rs]);                                      
-             break;                                                                  
-
-          case 0x45:                                                                
-             /* CMP rd, rs */                                                        
-             {                                                                       
-                thumb_pc_offset(4);                                                   
-                thumb_decode_hireg_op();                                              
-                u32 _sa = reg[rd];                                                    
-                u32 _sb = reg[rs];                                                    
-                u32 dest = _sa - _sb;                                                 
-                thumb_pc_offset(-2);                                                  
-                calculate_flags_sub(dest, _sa, _sb);                                  
-             }                                                                       
-             break;                                                                  
-
-          case 0x46:                                                                
-             /* MOV rd, rs */                                                        
-             thumb_hireg_op(reg[rs]);                                                
-             break;                                                                  
-
-          case 0x47:                                                                
-             /* BX rs */                                                             
-             {                                                                       
-                thumb_decode_hireg_op();                                              
-                u32 src;                                                              
-                thumb_pc_offset(4);                                                   
-                src = reg[rs];                                                        
-                if(src & 0x01)                                                        
-                {                                                                     
-                   src -= 1;                                                           
-                   thumb_pc_offset_update_direct(src);                                 
-                }                                                                     
-                else                                                                  
-                {                                                                     
-                   /* Switch to ARM mode */                                            
-                   thumb_pc_offset_update_direct(src);                                 
-                   reg[REG_CPSR] &= ~0x20;                                             
-                   collapse_flags();                                                   
-                   goto arm_loop;                                                      
-                }                                                                     
-             }                                                                       
-             break;                                                                  
-
-          case 0x48:                                                                
-             /* LDR r0, [pc + imm] */                                                
-             thumb_access_memory(load, imm, (pc & ~2) + (imm * 4) + 4, reg[0], u32); 
-             break;                                                                  
-
-          case 0x49:                                                                
-             /* LDR r1, [pc + imm] */                                                
-             thumb_access_memory(load, imm, (pc & ~2) + (imm * 4) + 4, reg[1], u32); 
-             break;                                                                  
-
-          case 0x4A:                                                                
-             /* LDR r2, [pc + imm] */                                                
-             thumb_access_memory(load, imm, (pc & ~2) + (imm * 4) + 4, reg[2], u32); 
-             break;                                                                  
-
-          case 0x4B:                                                                
-             /* LDR r3, [pc + imm] */                                                
-             thumb_access_memory(load, imm, (pc & ~2) + (imm * 4) + 4, reg[3], u32); 
-             break;                                                                  
-
-          case 0x4C:                                                                
-             /* LDR r4, [pc + imm] */                                                
-             thumb_access_memory(load, imm, (pc & ~2) + (imm * 4) + 4, reg[4], u32); 
-             break;                                                                  
-
-          case 0x4D:                                                                
-             /* LDR r5, [pc + imm] */                                                
-             thumb_access_memory(load, imm, (pc & ~2) + (imm * 4) + 4, reg[5], u32); 
-             break;                                                                  
-
-          case 0x4E:                                                                
-             /* LDR r6, [pc + imm] */                                                
-             thumb_access_memory(load, imm, (pc & ~2) + (imm * 4) + 4, reg[6], u32); 
-             break;                                                                  
-
-          case 0x4F:                                                                
-             /* LDR r7, [pc + imm] */                                                
-             thumb_access_memory(load, imm, (pc & ~2) + (imm * 4) + 4, reg[7], u32); 
-             break;                                                                  
+          case 0x48 ... 0x4F:
+             /* LDR r0..7, [pc + imm] */
+             thumb_access_memory(load, imm, (pc & ~2) + (imm * 4) + 4, reg[(opcode >> 8) & 7], u32);
+             break;
 
           case 0x50:
-          case 0x51:                                                       
-             /* STR rd, [rb + ro] */                                                 
-             thumb_access_memory(store, mem_reg, reg[rb] + reg[ro], reg[rd], u32);   
-             break;                                                                  
+          case 0x51:
+             /* STR rd, [rb + ro] */
+             thumb_access_memory(store, mem_reg, reg[rb] + reg[ro], reg[rd], u32);
+             break;
 
           case 0x52:
-          case 0x53:                                                       
-             /* STRH rd, [rb + ro] */                                                
-             thumb_access_memory(store, mem_reg, reg[rb] + reg[ro], reg[rd], u16);   
-             break;                                                                  
+          case 0x53:
+             /* STRH rd, [rb + ro] */
+             thumb_access_memory(store, mem_reg, reg[rb] + reg[ro], reg[rd], u16);
+             break;
 
           case 0x54:
           case 0x55:
-             /* STRB rd, [rb + ro] */                                                
-             thumb_access_memory(store, mem_reg, reg[rb] + reg[ro], reg[rd], u8);    
-             break;                                                                  
+             /* STRB rd, [rb + ro] */
+             thumb_access_memory(store, mem_reg, reg[rb] + reg[ro], reg[rd], u8);
+             break;
 
           case 0x56:
           case 0x57:
-             /* LDSB rd, [rb + ro] */                                                
-             thumb_access_memory(load, mem_reg, reg[rb] + reg[ro], reg[rd], s8);     
-             break;                                                                  
+             /* LDSB rd, [rb + ro] */
+             thumb_access_memory(load, mem_reg, reg[rb] + reg[ro], reg[rd], s8);
+             break;
 
           case 0x58:
           case 0x59:
-             /* LDR rd, [rb + ro] */                                                 
-             thumb_access_memory(load, mem_reg, reg[rb] + reg[ro], reg[rd], u32);    
-             break;                                                                  
+             /* LDR rd, [rb + ro] */
+             thumb_access_memory(load, mem_reg, reg[rb] + reg[ro], reg[rd], u32);
+             break;
 
           case 0x5A:
           case 0x5B:
-             /* LDRH rd, [rb + ro] */                                                
-             thumb_access_memory(load, mem_reg, reg[rb] + reg[ro], reg[rd], u16);    
-             break;                                                                  
+             /* LDRH rd, [rb + ro] */
+             thumb_access_memory(load, mem_reg, reg[rb] + reg[ro], reg[rd], u16);
+             break;
 
           case 0x5C:
           case 0x5D:
-             /* LDRB rd, [rb + ro] */                                                
-             thumb_access_memory(load, mem_reg, reg[rb] + reg[ro], reg[rd], u8);     
-             break;                                                                  
+             /* LDRB rd, [rb + ro] */
+             thumb_access_memory(load, mem_reg, reg[rb] + reg[ro], reg[rd], u8);
+             break;
 
           case 0x5E:
           case 0x5F:
-             /* LDSH rd, [rb + ro] */                                                
-             thumb_access_memory(load, mem_reg, reg[rb] + reg[ro], reg[rd], s16);    
-             break;                                                                  
+             /* LDSH rd, [rb + ro] */
+             thumb_access_memory(load, mem_reg, reg[rb] + reg[ro], reg[rd], s16);
+             break;
 
-          case 0x60:
-          case 0x61:
-          case 0x62:
-          case 0x63:
-          case 0x64:
-          case 0x65:
-          case 0x66:
-          case 0x67:                                                      
-             /* STR rd, [rb + imm] */                                                
-             thumb_access_memory(store, mem_imm, reg[rb] + (imm * 4), reg[rd], u32); 
-             break;                                                                  
+          case 0x60 ... 0x67:
+             /* STR rd, [rb + imm] */
+             thumb_access_memory(store, mem_imm, reg[rb] + (imm * 4), reg[rd], u32);
+             break;
 
-          case 0x68:
-          case 0x69:
-          case 0x6A:
-          case 0x6B:
-          case 0x6C:
-          case 0x6D:
-          case 0x6E:
-          case 0x6F:                                                       
-             /* LDR rd, [rb + imm] */                                                
-             thumb_access_memory(load, mem_imm, reg[rb] + (imm * 4), reg[rd], u32);  
-             break;                                                                  
+          case 0x68 ... 0x6F:
+             /* LDR rd, [rb + imm] */
+             thumb_access_memory(load, mem_imm, reg[rb] + (imm * 4), reg[rd], u32);
+             break;
 
-          case 0x70:
-          case 0x71:
-          case 0x72:
-          case 0x73:
-          case 0x74:
-          case 0x75:
-          case 0x76:
-          case 0x77:                                                       
-             /* STRB rd, [rb + imm] */                                               
-             thumb_access_memory(store, mem_imm, reg[rb] + imm, reg[rd], u8);        
-             break;                                                                  
+          case 0x70 ... 0x77:
+             /* STRB rd, [rb + imm] */
+             thumb_access_memory(store, mem_imm, reg[rb] + imm, reg[rd], u8);
+             break;
 
-          case 0x78:
-          case 0x79:
-          case 0x7A:
-          case 0x7B:
-          case 0x7C:
-          case 0x7D:
-          case 0x7E:
-          case 0x7F:                                                       
-             /* LDRB rd, [rb + imm] */                                               
-             thumb_access_memory(load, mem_imm, reg[rb] + imm, reg[rd], u8);         
-             break;                                                                  
+          case 0x78 ... 0x7F:
+             /* LDRB rd, [rb + imm] */
+             thumb_access_memory(load, mem_imm, reg[rb] + imm, reg[rd], u8);
+             break;
 
-          case 0x80:
-          case 0x81:
-          case 0x82:
-          case 0x83:
-          case 0x84:
-          case 0x85:
-          case 0x86:
-          case 0x87:                                                       
-             /* STRH rd, [rb + imm] */                                               
-             thumb_access_memory(store, mem_imm, reg[rb] + (imm * 2), reg[rd], u16); 
-             break;                                                                  
+          case 0x80 ... 0x87:
+             /* STRH rd, [rb + imm] */
+             thumb_access_memory(store, mem_imm, reg[rb] + (imm * 2), reg[rd], u16);
+             break;
 
-          case 0x88:
-          case 0x89:
-          case 0x8A:
-          case 0x8B:
-          case 0x8C:
-          case 0x8D:
-          case 0x8E:
-          case 0x8F:                                                       
-             /* LDRH rd, [rb + imm] */                                               
-             thumb_access_memory(load, mem_imm, reg[rb] + (imm * 2), reg[rd], u16);  
-             break;                                                                  
+          case 0x88 ... 0x8F:
+             /* LDRH rd, [rb + imm] */
+             thumb_access_memory(load, mem_imm, reg[rb] + (imm * 2), reg[rd], u16);
+             break;
 
-          case 0x90:                                                                
-             /* STR r0, [sp + imm] */                                                
-             thumb_access_memory(store, imm, reg[REG_SP] + (imm * 4), reg[0], u32);  
-             break;                                                                  
+          case 0x90 ... 0x97:
+             /* STR r0..7, [sp + imm] */
+             thumb_access_memory(store, imm, reg[REG_SP] + (imm * 4), reg[(opcode >> 8) & 7], u32);
+             break;
 
-          case 0x91:                                                                
-             /* STR r1, [sp + imm] */                                                
-             thumb_access_memory(store, imm, reg[REG_SP] + (imm * 4), reg[1], u32);  
-             break;                                                                  
+          case 0x98 ... 0x9F:
+             /* LDR r0..7, [sp + imm] */
+             thumb_access_memory(load, imm, reg[REG_SP] + (imm * 4), reg[(opcode >> 8) & 7], u32);
+             break;
 
-          case 0x92:                                                                
-             /* STR r2, [sp + imm] */                                                
-             thumb_access_memory(store, imm, reg[REG_SP] + (imm * 4), reg[2], u32);  
-             break;                                                                  
+          case 0xA0 ... 0xA7:
+             /* ADD r0..7, pc, +imm */
+             thumb_add_noflags(imm, ((opcode >> 8) & 7), (pc & ~2) + 4, (imm * 4));
+             break;
 
-          case 0x93:                                                                
-             /* STR r3, [sp + imm] */                                                
-             thumb_access_memory(store, imm, reg[REG_SP] + (imm * 4), reg[3], u32);  
-             break;                                                                  
-
-          case 0x94:                                                                
-             /* STR r4, [sp + imm] */                                                
-             thumb_access_memory(store, imm, reg[REG_SP] + (imm * 4), reg[4], u32);  
-             break;                                                                  
-
-          case 0x95:                                                                
-             /* STR r5, [sp + imm] */                                                
-             thumb_access_memory(store, imm, reg[REG_SP] + (imm * 4), reg[5], u32);  
-             break;                                                                  
-
-          case 0x96:                                                                
-             /* STR r6, [sp + imm] */                                                
-             thumb_access_memory(store, imm, reg[REG_SP] + (imm * 4), reg[6], u32);  
-             break;                                                                  
-
-          case 0x97:                                                                
-             /* STR r7, [sp + imm] */                                                
-             thumb_access_memory(store, imm, reg[REG_SP] + (imm * 4), reg[7], u32);  
-             break;                                                                  
-
-          case 0x98:                                                                
-             /* LDR r0, [sp + imm] */                                                
-             thumb_access_memory(load, imm, reg[REG_SP] + (imm * 4), reg[0], u32);   
-             break;                                                                  
-
-          case 0x99:                                                                
-             /* LDR r1, [sp + imm] */                                                
-             thumb_access_memory(load, imm, reg[REG_SP] + (imm * 4), reg[1], u32);   
-             break;                                                                  
-
-          case 0x9A:                                                                
-             /* LDR r2, [sp + imm] */                                                
-             thumb_access_memory(load, imm, reg[REG_SP] + (imm * 4), reg[2], u32);   
-             break;                                                                  
-
-          case 0x9B:                                                                
-             /* LDR r3, [sp + imm] */                                                
-             thumb_access_memory(load, imm, reg[REG_SP] + (imm * 4), reg[3], u32);   
-             break;                                                                  
-
-          case 0x9C:                                                                
-             /* LDR r4, [sp + imm] */                                                
-             thumb_access_memory(load, imm, reg[REG_SP] + (imm * 4), reg[4], u32);   
-             break;                                                                  
-
-          case 0x9D:                                                                
-             /* LDR r5, [sp + imm] */                                                
-             thumb_access_memory(load, imm, reg[REG_SP] + (imm * 4), reg[5], u32);   
-             break;                                                                  
-
-          case 0x9E:                                                                
-             /* LDR r6, [sp + imm] */                                                
-             thumb_access_memory(load, imm, reg[REG_SP] + (imm * 4), reg[6], u32);   
-             break;                                                                  
-
-          case 0x9F:                                                                
-             /* LDR r7, [sp + imm] */                                                
-             thumb_access_memory(load, imm, reg[REG_SP] + (imm * 4), reg[7], u32);   
-             break;                                                                  
-
-          case 0xA0:                                                                
-             /* ADD r0, pc, +imm */                                                  
-             thumb_add_noflags(imm, 0, (pc & ~2) + 4, (imm * 4));                    
-             break;                                                                  
-
-          case 0xA1:                                                                
-             /* ADD r1, pc, +imm */                                                  
-             thumb_add_noflags(imm, 1, (pc & ~2) + 4, (imm * 4));                    
-             break;                                                                  
-
-          case 0xA2:                                                                
-             /* ADD r2, pc, +imm */                                                  
-             thumb_add_noflags(imm, 2, (pc & ~2) + 4, (imm * 4));                    
-             break;                                                                  
-
-          case 0xA3:                                                                
-             /* ADD r3, pc, +imm */                                                  
-             thumb_add_noflags(imm, 3, (pc & ~2) + 4, (imm * 4));                    
-             break;                                                                  
-
-          case 0xA4:                                                                
-             /* ADD r4, pc, +imm */                                                  
-             thumb_add_noflags(imm, 4, (pc & ~2) + 4, (imm * 4));                    
-             break;                                                                  
-
-          case 0xA5:                                                                
-             /* ADD r5, pc, +imm */                                                  
-             thumb_add_noflags(imm, 5, (pc & ~2) + 4, (imm * 4));                    
-             break;                                                                  
-
-          case 0xA6:                                                                
-             /* ADD r6, pc, +imm */                                                  
-             thumb_add_noflags(imm, 6, (pc & ~2) + 4, (imm * 4));                    
-             break;                                                                  
-
-          case 0xA7:                                                                
-             /* ADD r7, pc, +imm */                                                  
-             thumb_add_noflags(imm, 7, (pc & ~2) + 4, (imm * 4));                    
-             break;                                                                  
-
-          case 0xA8:                                                                
-             /* ADD r0, sp, +imm */                                                  
-             thumb_add_noflags(imm, 0, reg[REG_SP], (imm * 4));                      
-             break;                                                                  
-
-          case 0xA9:                                                                
-             /* ADD r1, sp, +imm */                                                  
-             thumb_add_noflags(imm, 1, reg[REG_SP], (imm * 4));                      
-             break;                                                                  
-
-          case 0xAA:                                                                
-             /* ADD r2, sp, +imm */                                                  
-             thumb_add_noflags(imm, 2, reg[REG_SP], (imm * 4));                      
-             break;                                                                  
-
-          case 0xAB:                                                                
-             /* ADD r3, sp, +imm */                                                  
-             thumb_add_noflags(imm, 3, reg[REG_SP], (imm * 4));                      
-             break;                                                                  
-
-          case 0xAC:                                                                
-             /* ADD r4, sp, +imm */                                                  
-             thumb_add_noflags(imm, 4, reg[REG_SP], (imm * 4));                      
-             break;                                                                  
-
-          case 0xAD:                                                                
-             /* ADD r5, sp, +imm */                                                  
-             thumb_add_noflags(imm, 5, reg[REG_SP], (imm * 4));                      
-             break;                                                                  
-
-          case 0xAE:                                                                
-             /* ADD r6, sp, +imm */                                                  
-             thumb_add_noflags(imm, 6, reg[REG_SP], (imm * 4));                      
-             break;                                                                  
-
-          case 0xAF:                                                                
-             /* ADD r7, sp, +imm */                                                  
-             thumb_add_noflags(imm, 7, reg[REG_SP], (imm * 4));                      
-             break;                                                                  
+          case 0xA8 ... 0xAF:
+             /* ADD r0..7, sp, +imm */
+             thumb_add_noflags(imm, ((opcode >> 8) & 7), reg[REG_SP], (imm * 4));
+             break;
 
           case 0xB0:
           case 0xB1:
           case 0xB2:
-          case 0xB3:                                                       
-             if((opcode >> 7) & 0x01)                                                
-             {                                                                       
-                /* ADD sp, -imm */                                                    
-                thumb_add_noflags(add_sp, 13, reg[REG_SP], -(imm * 4));               
-             }                                                                       
-             else                                                                    
-             {                                                                       
-                /* ADD sp, +imm */                                                    
-                thumb_add_noflags(add_sp, 13, reg[REG_SP], (imm * 4));                
-             }                                                                       
-             break;                                                                  
+          case 0xB3:
+             if((opcode >> 7) & 0x01)
+             {
+                /* ADD sp, -imm */
+                thumb_add_noflags(add_sp, 13, reg[REG_SP], -(imm * 4));
+             }
+             else
+             {
+                /* ADD sp, +imm */
+                thumb_add_noflags(add_sp, 13, reg[REG_SP], (imm * 4));
+             }
+             break;
 
-          case 0xB4:                                                                
-             /* PUSH rlist */                                                        
-             thumb_block_memory(store, down, no_op, 13);                             
-             break;                                                                  
+          case 0xB4:
+             /* PUSH rlist */
+             thumb_block_memory(store, down, no_op, 13);
+             break;
 
-          case 0xB5:                                                                
-             /* PUSH rlist, lr */                                                    
-             thumb_block_memory(store, push_lr, push_lr, 13);                        
-             break;                                                                  
+          case 0xB5:
+             /* PUSH rlist, lr */
+             thumb_block_memory(store, push_lr, push_lr, 13);
+             break;
 
-          case 0xBC:                                                                
-             /* POP rlist */                                                         
-             thumb_block_memory(load, no_op, up, 13);                                
-             break;                                                                  
+          case 0xBC:
+             /* POP rlist */
+             thumb_block_memory(load, no_op, up, 13);
+             break;
 
-          case 0xBD:                                                                
-             /* POP rlist, pc */                                                     
-             thumb_block_memory(load, no_op, pop_pc, 13);                            
-             break;                                                                  
+          case 0xBD:
+             /* POP rlist, pc */
+             thumb_block_memory(load, no_op, pop_pc, 13);
+             break;
 
-          case 0xC0:                                                                
-             /* STMIA r0!, rlist */                                                  
-             thumb_block_memory(store, no_op, up, 0);                                
-             break;                                                                  
+          case 0xC0 ... 0xC7:
+             /* STMIA r0..7!, rlist */
+             thumb_block_memory(store, no_op, up, ((opcode >> 8) & 7));
+             break;
 
-          case 0xC1:                                                                
-             /* STMIA r1!, rlist */                                                  
-             thumb_block_memory(store, no_op, up, 1);                                
-             break;                                                                  
+          case 0xC8 ... 0xCF:
+             /* LDMIA r0..7!, rlist */
+             thumb_block_memory(load, no_op, up, ((opcode >> 8) & 7));
+             break;
 
-          case 0xC2:                                                                
-             /* STMIA r2!, rlist */                                                  
-             thumb_block_memory(store, no_op, up, 2);                                
-             break;                                                                  
+          case 0xD0:
+             /* BEQ label */
+             thumb_conditional_branch(z_flag == 1);
+             break;
 
-          case 0xC3:                                                                
-             /* STMIA r3!, rlist */                                                  
-             thumb_block_memory(store, no_op, up, 3);                                
-             break;                                                                  
+          case 0xD1:
+             /* BNE label */
+             thumb_conditional_branch(z_flag == 0);
+             break;
 
-          case 0xC4:                                                                
-             /* STMIA r4!, rlist */                                                  
-             thumb_block_memory(store, no_op, up, 4);                                
-             break;                                                                  
+          case 0xD2:
+             /* BCS label */
+             thumb_conditional_branch(c_flag == 1);
+             break;
 
-          case 0xC5:                                                                
-             /* STMIA r5!, rlist */                                                  
-             thumb_block_memory(store, no_op, up, 5);                                
-             break;                                                                  
+          case 0xD3:
+             /* BCC label */
+             thumb_conditional_branch(c_flag == 0);
+             break;
 
-          case 0xC6:                                                                
-             /* STMIA r6!, rlist */                                                  
-             thumb_block_memory(store, no_op, up, 6);                                
-             break;                                                                  
+          case 0xD4:
+             /* BMI label */
+             thumb_conditional_branch(n_flag == 1);
+             break;
 
-          case 0xC7:                                                                
-             /* STMIA r7!, rlist */                                                  
-             thumb_block_memory(store, no_op, up, 7);                                
-             break;                                                                  
+          case 0xD5:
+             /* BPL label */
+             thumb_conditional_branch(n_flag == 0);
+             break;
 
-          case 0xC8:                                                                
-             /* LDMIA r0!, rlist */                                                  
-             thumb_block_memory(load, no_op, up, 0);                                 
-             break;                                                                  
+          case 0xD6:
+             /* BVS label */
+             thumb_conditional_branch(v_flag == 1);
+             break;
 
-          case 0xC9:                                                                
-             /* LDMIA r1!, rlist */                                                  
-             thumb_block_memory(load, no_op, up, 1);                                 
-             break;                                                                  
+          case 0xD7:
+             /* BVC label */
+             thumb_conditional_branch(v_flag == 0);
+             break;
 
-          case 0xCA:                                                                
-             /* LDMIA r2!, rlist */                                                  
-             thumb_block_memory(load, no_op, up, 2);                                 
-             break;                                                                  
+          case 0xD8:
+             /* BHI label */
+             thumb_conditional_branch(c_flag & (z_flag ^ 1));
+             break;
 
-          case 0xCB:                                                                
-             /* LDMIA r3!, rlist */                                                  
-             thumb_block_memory(load, no_op, up, 3);                                 
-             break;                                                                  
+          case 0xD9:
+             /* BLS label */
+             thumb_conditional_branch((c_flag == 0) | z_flag);
+             break;
 
-          case 0xCC:                                                                
-             /* LDMIA r4!, rlist */                                                  
-             thumb_block_memory(load, no_op, up, 4);                                 
-             break;                                                                  
+          case 0xDA:
+             /* BGE label */
+             thumb_conditional_branch(n_flag == v_flag);
+             break;
 
-          case 0xCD:                                                                
-             /* LDMIA r5!, rlist */                                                  
-             thumb_block_memory(load, no_op, up, 5);                                 
-             break;                                                                  
+          case 0xDB:
+             /* BLT label */
+             thumb_conditional_branch(n_flag != v_flag);
+             break;
 
-          case 0xCE:                                                                
-             /* LDMIA r6!, rlist */                                                  
-             thumb_block_memory(load, no_op, up, 6);                                 
-             break;                                                                  
+          case 0xDC:
+             /* BGT label */
+             thumb_conditional_branch((z_flag == 0) & (n_flag == v_flag));
+             break;
 
-          case 0xCF:                                                                
-             /* LDMIA r7!, rlist */                                                  
-             thumb_block_memory(load, no_op, up, 7);                                 
-             break;                                                                  
+          case 0xDD:
+             /* BLE label */
+             thumb_conditional_branch(z_flag | (n_flag != v_flag));
+             break;
 
-          case 0xD0:                                                                
-             /* BEQ label */                                                         
-             thumb_conditional_branch(z_flag == 1);                                  
-             break;                                                                  
+          case 0xDF:
+             {
+                /* SWI comment */
+                u32 swi_comment = opcode & 0xFF;
 
-          case 0xD1:                                                                
-             /* BNE label */                                                         
-             thumb_conditional_branch(z_flag == 0);                                  
-             break;                                                                  
+                switch(swi_comment)
+                {
+                   default:
+                      reg_mode[MODE_SUPERVISOR][6] = pc + 2;
+                      spsr[MODE_SUPERVISOR] = reg[REG_CPSR];
+                      reg[REG_PC] = 0x00000008;
+                      thumb_update_pc();
+                      reg[REG_CPSR] = (reg[REG_CPSR] & ~0x3F) | 0x13;
+                      set_cpu_mode(MODE_SUPERVISOR);
+                      collapse_flags();
+                      goto arm_loop;
+                }
+                break;
+             }
 
-          case 0xD2:                                                                
-             /* BCS label */                                                         
-             thumb_conditional_branch(c_flag == 1);                                  
-             break;                                                                  
+          case 0xE0 ... 0xE7:
+             {
+                /* B label */
+                thumb_decode_branch();
+                thumb_pc_offset_update(((s32)(offset << 21) >> 20) + 4);
+                break;
+             }
 
-          case 0xD3:                                                                
-             /* BCC label */                                                         
-             thumb_conditional_branch(c_flag == 0);                                  
-             break;                                                                  
+          case 0xF0 ... 0xF7:
+             {
+                /* (low word) BL label */
+                thumb_decode_branch();
+                reg[REG_LR] = pc + 4 + ((s32)(offset << 21) >> 9);
+                thumb_pc_offset(2);
+                break;
+             }
 
-          case 0xD4:                                                                
-             /* BMI label */                                                         
-             thumb_conditional_branch(n_flag == 1);                                  
-             break;                                                                  
-
-          case 0xD5:                                                                
-             /* BPL label */                                                         
-             thumb_conditional_branch(n_flag == 0);                                  
-             break;                                                                  
-
-          case 0xD6:                                                                
-             /* BVS label */                                                         
-             thumb_conditional_branch(v_flag == 1);                                  
-             break;                                                                  
-
-          case 0xD7:                                                                
-             /* BVC label */                                                         
-             thumb_conditional_branch(v_flag == 0);                                  
-             break;                                                                  
-
-          case 0xD8:                                                                
-             /* BHI label */                                                         
-             thumb_conditional_branch(c_flag & (z_flag ^ 1));                        
-             break;                                                                  
-
-          case 0xD9:                                                                
-             /* BLS label */                                                         
-             thumb_conditional_branch((c_flag == 0) | z_flag);                       
-             break;                                                                  
-
-          case 0xDA:                                                                
-             /* BGE label */                                                         
-             thumb_conditional_branch(n_flag == v_flag);                             
-             break;                                                                  
-
-          case 0xDB:                                                                
-             /* BLT label */                                                         
-             thumb_conditional_branch(n_flag != v_flag);                             
-             break;                                                                  
-
-          case 0xDC:                                                                
-             /* BGT label */                                                         
-             thumb_conditional_branch((z_flag == 0) & (n_flag == v_flag));           
-             break;                                                                  
-
-          case 0xDD:                                                                
-             /* BLE label */                                                         
-             thumb_conditional_branch(z_flag | (n_flag != v_flag));                  
-             break;                                                                  
-
-          case 0xDF:                                                                
-             {                                                                         
-                /* SWI comment */                                                       
-                u32 swi_comment = opcode & 0xFF;                                        
-
-                switch(swi_comment)                                                     
-                {                                                                       
-                   default:                                                              
-                      reg_mode[MODE_SUPERVISOR][6] = pc + 2;                              
-                      spsr[MODE_SUPERVISOR] = reg[REG_CPSR];                              
-                      reg[REG_PC] = 0x00000008;                                           
-                      thumb_update_pc();                                                  
-                      reg[REG_CPSR] = (reg[REG_CPSR] & ~0x3F) | 0x13;                     
-                      set_cpu_mode(MODE_SUPERVISOR);                                      
-                      collapse_flags();                                                   
-                      goto arm_loop;                                                      
-                }                                                                       
-                break;                                                                  
-             }                                                                         
-
-          case 0xE0:
-          case 0xE1:
-          case 0xE2:
-          case 0xE3:
-          case 0xE4:
-          case 0xE5:
-          case 0xE6:
-          case 0xE7:                                                       
-             {                                                                         
-                /* B label */                                                           
-                thumb_decode_branch();                                                  
-                thumb_pc_offset_update(((s32)(offset << 21) >> 20) + 4);                
-                break;                                                                  
-             }                                                                         
-
-          case 0xF0:
-          case 0xF1:
-          case 0xF2:
-          case 0xF3:
-          case 0xF4:
-          case 0xF5:
-          case 0xF6:
-          case 0xF7:                                                       
-             {                                                                         
-                /* (low word) BL label */                                               
-                thumb_decode_branch();                                                  
-                reg[REG_LR] = pc + 4 + ((s32)(offset << 21) >> 9);                      
-                thumb_pc_offset(2);                                                     
-                break;                                                                  
-             }                                                                         
-
-          case 0xF8:
-          case 0xF9:
-          case 0xFA:
-          case 0xFB:
-          case 0xFC:
-          case 0xFD:
-          case 0xFE:
-          case 0xFF:                                                       
-             {                                                                         
-                /* (high word) BL label */                                              
-                thumb_decode_branch();                                                  
-                u32 lr = (pc + 2) | 0x01;                                               
-                pc = reg[REG_LR] + (offset * 2);                                        
-                reg[REG_LR] = lr;                                                       
-                reg[REG_PC] = pc;                                                       
-                break;                                                                  
-             }                                                                         
-       }                                                                           
+          case 0xF8 ... 0xFF:
+             {
+                /* (high word) BL label */
+                thumb_decode_branch();
+                u32 lr = (pc + 2) | 0x01;
+                pc = reg[REG_LR] + (offset * 2);
+                reg[REG_LR] = lr;
+                reg[REG_PC] = pc;
+                break;
+             }
+       }
 
        /* End of Execute THUMB instruction */
        cycles_remaining -= cycles_per_instruction;
@@ -4261,19 +3748,21 @@ thumb_loop:
     } while(cycles_remaining > 0);
 
     collapse_flags();
-    cycles = update_gba();
+    cycles_remaining = update_gba();
+    if (reg[COMPLETED_FRAME])
+      return;
     continue;
 
     alert:
 
-    if(cpu_alert == CPU_ALERT_IRQ)
-      cycles = cycles_remaining;
-    else
-    {
+    if(cpu_alert != CPU_ALERT_IRQ) {
       collapse_flags();
 
-      while(reg[CPU_HALT_STATE] != CPU_ACTIVE)
-        cycles = update_gba();
+      while(reg[CPU_HALT_STATE] != CPU_ACTIVE) {
+        cycles_remaining = update_gba();
+        if (reg[COMPLETED_FRAME])
+          return;
+      }
     }
   }
 }
@@ -4285,29 +3774,28 @@ void init_cpu(void)
   for(i = 0; i < 16; i++)
     reg[i] = 0;
 
-  reg[REG_SP] = 0x03007F00;
-  reg[REG_PC] = 0x08000000;
-  reg[REG_CPSR] = 0x0000001F;
   reg[CPU_HALT_STATE] = CPU_ACTIVE;
-  reg[CPU_MODE] = MODE_USER;
   reg[CHANGED_PC_STATUS] = 0;
 
+  if (selected_boot_mode == boot_game) {
+    reg[REG_SP] = 0x03007F00;
+    reg[REG_PC] = 0x08000000;
+    reg[REG_CPSR] = 0x0000001F;   // system mode
+    reg[CPU_MODE] = MODE_USER;
+  } else {
+    reg[REG_SP] = 0x03007F00;
+    reg[REG_PC] = 0x00000000;
+    reg[REG_CPSR] = 0x00000013 | 0xC0;  // supervisor
+    reg[CPU_MODE] = MODE_SUPERVISOR;
+  }
+
+  // Stack pointers are set by BIOS, we set them
+  // nevertheless, should we not boot from BIOS
   reg_mode[MODE_USER][5] = 0x03007F00;
   reg_mode[MODE_IRQ][5] = 0x03007FA0;
   reg_mode[MODE_FIQ][5] = 0x03007FA0;
   reg_mode[MODE_SUPERVISOR][5] = 0x03007FE0;
 }
-
-void move_reg(u32 *new_reg)
-{
-  u32 i;
-
-  for(i = 0; i < 32; i++)
-    new_reg[i] = reg[i];
-
-  reg = new_reg;
-}
-
 
 #define cpu_savestate_builder(type)   \
 void cpu_##type##_savestate(void)     \

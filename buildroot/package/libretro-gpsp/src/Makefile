@@ -7,26 +7,18 @@ HAVE_MMAP_WIN32=0
 
 UNAME=$(shell uname -a)
 
-ifneq ($(EMSCRIPTEN),)
-	platform = emscripten
-endif
-
+# platform
 ifeq ($(platform),)
-	platform = unix
-	ifeq ($(UNAME),)
-		platform = win
-	else ifneq ($(findstring MINGW,$(UNAME)),)
-		platform = win
-	else ifneq ($(findstring Darwin,$(UNAME)),)
-		platform = osx
-		arch = intel
-	ifeq ($(shell uname -p),powerpc)
-		arch = ppc
-		FORCE_32BIT_ARCH = 1
-	endif
-	else ifneq ($(findstring win,$(UNAME)),)
-		platform = win
-	endif
+platform = unix
+ifeq ($(shell uname -s),)
+   platform = win
+else ifneq ($(findstring MINGW,$(shell uname -s)),)
+   platform = win
+else ifneq ($(findstring Darwin,$(shell uname -s)),)
+   platform = osx
+else ifneq ($(findstring win,$(shell uname -s)),)
+   platform = win
+endif
 endif
 
 
@@ -48,16 +40,19 @@ endif
 
 # system platform
 system_platform = unix
-ifeq ($(UNAME),)
+ifeq ($(shell uname -a),)
 	EXE_EXT = .exe
 	system_platform = win
-else ifneq ($(findstring Darwin,$(UNAME)),)
+else ifneq ($(findstring Darwin,$(shell uname -a)),)
 	system_platform = osx
 	arch = intel
 	ifeq ($(shell uname -p),powerpc)
 		arch = ppc
 	endif
-	else ifneq ($(findstring MINGW,$(UNAME)),)
+	ifeq ($(shell uname -p),arm)
+		arch = arm
+	endif
+else ifneq ($(findstring MINGW,$(shell uname -a)),)
 	system_platform = win
 endif
 
@@ -109,10 +104,18 @@ else ifeq ($(platform), osx)
 	ifeq ($(HAVE_DYNAREC),1)
 		HAVE_MMAP = 1
 	endif
-	ifndef ($(NOUNIVERSAL))
-		CFLAGS += $(ARCHFLAGS)
-		LDFLAGS += $(ARCHFLAGS)
-	endif
+
+   ifeq ($(CROSS_COMPILE),1)
+		TARGET_RULE   = -target $(LIBRETRO_APPLE_PLATFORM) -isysroot $(LIBRETRO_APPLE_ISYSROOT)
+		CFLAGS   += $(TARGET_RULE)
+		CPPFLAGS += $(TARGET_RULE)
+		CXXFLAGS += $(TARGET_RULE)
+		LDFLAGS  += $(TARGET_RULE)
+   endif
+
+	CFLAGS  += $(ARCHFLAGS)
+	CXXFLAGS  += $(ARCHFLAGS)
+	LDFLAGS += $(ARCHFLAGS)
 
 # iOS
 else ifneq (,$(findstring ios,$(platform)))
@@ -140,6 +143,18 @@ else
 	CFLAGS += -miphoneos-version-min=5.0
 endif
 
+# tvOS
+else ifeq ($(platform), tvos-arm64)
+	TARGET := $(TARGET_NAME)_libretro_tvos.dylib
+	fpic := -fPIC
+	SHARED := -dynamiclib
+	CPU_ARCH := arm
+	CFLAGS += -DIOS -DHAVE_POSIX_MEMALIGN -marm
+
+	ifeq ($(IOSSDK),)
+		IOSSDK := $(shell xcodebuild -version -sdk appletvos Path)
+	endif
+
 # iOS Theos
 else ifeq ($(platform), theos_ios)
 	DEPLOYMENT_IOSVERSION = 5.0
@@ -159,28 +174,12 @@ else ifeq ($(platform), qnx)
 	fpic := -fPIC
 	SHARED := -shared -Wl,--version-script=link.T
 	HAVE_MMAP = 1
+	CPU_ARCH := arm
 
 	CC = qcc -Vgcc_ntoarmv7le
 	AR = qcc -Vgcc_ntoarmv7le
 	CFLAGS += -D__BLACKBERRY_QNX_
 	HAVE_DYNAREC := 1
-	CFLAGS += -DARM -DARM_ARCH -DARM_MEMORY_DYNAREC
-
-# PS3
-else ifeq ($(platform), ps3)
-	TARGET := $(TARGET_NAME)_libretro_$(platform).a
-	CC = $(CELL_SDK)/host-win32/ppu/bin/ppu-lv2-gcc.exe
-	AR = $(CELL_SDK)/host-win32/ppu/bin/ppu-lv2-ar.exe
-	CFLAGS += -DMSB_FIRST -D__ppc__
-	STATIC_LINKING = 1
-
-# sncps3
-else ifeq ($(platform), sncps3)
-	TARGET := $(TARGET_NAME)_libretro_ps3.a
-	CC = $(CELL_SDK)/host-win32/sn/bin/ps3ppusnc.exe
-	AR = $(CELL_SDK)/host-win32/sn/bin/ps3snarl.exe
-	CFLAGS += -DMSB_FIRST -D__ppc__
-	STATIC_LINKING = 1
 
 # Lightweight PS3 Homebrew SDK
 else ifeq ($(platform), psl1ght)
@@ -202,8 +201,14 @@ else ifeq ($(platform), psp1)
 	TARGET := $(TARGET_NAME)_libretro_$(platform).a
 	CC = psp-gcc$(EXE_EXT)
 	AR = psp-ar$(EXE_EXT)
-	CFLAGS += -DPSP -G0
+	CFLAGS += -DPSP -G0 -DUSE_BGR_FORMAT
+	CFLAGS += -I$(shell psp-config --pspsdk-path)/include
+	CFLAGS += -march=allegrex -mfp32 -mgp32 -mlong32 -mabi=eabi
+	CFLAGS += -fomit-frame-pointer -ffast-math
+	CFLAGS += -falign-functions=32 -falign-loops -falign-labels -falign-jumps
 	STATIC_LINKING = 1
+	HAVE_DYNAREC = 1
+	CPU_ARCH := mips
 
 # Vita
 else ifeq ($(platform), vita)
@@ -233,7 +238,6 @@ else ifeq ($(platform), ctr)
 	CFLAGS += -fomit-frame-pointer -ffast-math
 	CXXFLAGS = $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 	CPU_ARCH := arm
-	# dynarec unavailable with the HBL on FW > 9.2
 	HAVE_DYNAREC = 1
 	STATIC_LINKING = 1
 
@@ -242,10 +246,8 @@ else ifeq ($(platform), rpi3)
 	TARGET := $(TARGET_NAME)_libretro.so
 	fpic := -fPIC
 	SHARED := -shared -Wl,--version-script=link.T -Wl,--no-undefined
-	CFLAGS += -DARM -DARM_ARCH
 	CFLAGS += -marm -mcpu=cortex-a53 -mfpu=neon-fp-armv8 -mfloat-abi=hard
 	CFLAGS += -fomit-frame-pointer -ffast-math
-	CFLAGS += -DARM_MEMORY_DYNAREC
 	CXXFLAGS = $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 	CPU_ARCH := arm
 	HAVE_DYNAREC = 1
@@ -255,10 +257,8 @@ else ifeq ($(platform), rpi2)
 	TARGET := $(TARGET_NAME)_libretro.so
 	fpic := -fPIC
 	SHARED := -shared -Wl,--version-script=link.T -Wl,--no-undefined
-	CFLAGS += -DARM -DARM_ARCH
 	CFLAGS += -marm -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard
 	CFLAGS += -fomit-frame-pointer -ffast-math
-	CFLAGS += -DARM_MEMORY_DYNAREC
 	CXXFLAGS = $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 	CPU_ARCH := arm
 	HAVE_DYNAREC = 1
@@ -268,13 +268,49 @@ else ifeq ($(platform), rpi1)
 	TARGET := $(TARGET_NAME)_libretro.so
 	fpic := -fPIC
 	SHARED := -shared -Wl,--version-script=link.T -Wl,--no-undefined
-	CFLAGS += -DARM11 -DARM_ARCH
+	CFLAGS += -DARM11
 	CFLAGS += -marm -mfpu=vfp -mfloat-abi=hard -march=armv6j
 	CFLAGS += -fomit-frame-pointer -ffast-math
-	CFLAGS += -DARM_MEMORY_DYNAREC
 	CXXFLAGS = $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 	CPU_ARCH := arm
 	HAVE_DYNAREC = 1
+
+# Classic Platforms ####################
+# Platform affix = classic_<ISA>_<µARCH>
+# Help at https://modmyclassic.com/comp
+
+# (armv7 a7, hard point, neon based) ### 
+# NESC, SNESC, C64 mini 
+else ifeq ($(platform), classic_armv7_a7)
+	TARGET := $(TARGET_NAME)_libretro.so
+	fpic := -fPIC
+    SHARED := -shared -Wl,--version-script=link.T  -Wl,--no-undefined -fPIC
+	CFLAGS += -Ofast \
+	-flto=4 -fwhole-program -fuse-linker-plugin \
+	-fdata-sections -ffunction-sections -Wl,--gc-sections \
+	-fno-stack-protector -fno-ident -fomit-frame-pointer \
+	-falign-functions=1 -falign-jumps=1 -falign-loops=1 \
+	-fno-unwind-tables -fno-asynchronous-unwind-tables -fno-unroll-loops \
+	-fmerge-all-constants -fno-math-errno \
+	-marm -mtune=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard
+	CXXFLAGS = $(CFLAGS) -std=gnu++11
+	CPPFLAGS += $(CFLAGS)
+	ASFLAGS += $(CFLAGS)
+	HAVE_NEON = 1
+	ARCH = arm
+	BUILTIN_GPU = neon
+	CPU_ARCH := arm
+	HAVE_DYNAREC = 1
+	ifeq ($(shell echo `$(CC) -dumpversion` "< 4.9" | bc -l), 1)
+	  CFLAGS += -march=armv7-a
+	else
+	  CFLAGS += -march=armv7ve
+	  # If gcc is 5.0 or later
+	  ifeq ($(shell echo `$(CC) -dumpversion` ">= 5" | bc -l), 1)
+	    LDFLAGS += -static-libgcc -static-libstdc++
+	  endif
+	endif
+#######################################
 
 # Xbox 360
 else ifeq ($(platform), xenon)
@@ -328,13 +364,21 @@ else ifneq (,$(findstring armv,$(platform)))
 		CFLAGS += -mfloat-abi=hard
 		ASFLAGS += -mfloat-abi=hard
 	endif
-	CFLAGS += -DARM -DARM_ARCH
 	# Dynarec works at least in rpi, take a look at issue #11
 	ifeq (,$(findstring no-dynarec,$(platform)))
 		HAVE_DYNAREC := 1
-		CFLAGS += -DARM_MEMORY_DYNAREC
 	endif
 	LDFLAGS := -Wl,--no-undefined	
+
+# MIPS
+else ifeq ($(platform), mips32)
+	TARGET := $(TARGET_NAME)_libretro.so
+	SHARED := -shared -nostdlib -Wl,--version-script=link.T
+	fpic := -fPIC -DPIC
+	CFLAGS += -fomit-frame-pointer -ffast-math -march=mips32 -mtune=mips32r2 -mhard-float
+	CFLAGS += -fno-caller-saves
+	HAVE_DYNAREC := 1
+	CPU_ARCH := mips
 
 # emscripten
 else ifeq ($(platform), emscripten)
@@ -348,14 +392,31 @@ else ifeq ($(platform), gcw0)
 	CXX = /opt/gcw0-toolchain/usr/bin/mipsel-linux-g++
 	AR = /opt/gcw0-toolchain/usr/bin/mipsel-linux-ar
 	SHARED := -shared -nostdlib -Wl,--version-script=link.T
-	fpic := -fPIC
-	CFLAGS += $(PTHREAD_FLAGS) -DHAVE_MKDIR
-	CFLAGS += -ffast-math -march=mips32 -mtune=mips32r2 -mhard-float
+	fpic := -fPIC -DPIC
+	CFLAGS += -fomit-frame-pointer -ffast-math -march=mips32 -mtune=mips32r2 -mhard-float
+	HAVE_DYNAREC := 1
+	CPU_ARCH := mips
+
+# GCW0 (OpenDingux Beta)
+else ifeq ($(platform), gcw0-odbeta)
+	TARGET := $(TARGET_NAME)_libretro.so
+	CC = /opt/gcw0-toolchain/usr/bin/mipsel-linux-gcc
+	CXX = /opt/gcw0-toolchain/usr/bin/mipsel-linux-g++
+	AR = /opt/gcw0-toolchain/usr/bin/mipsel-linux-ar
+	SHARED := -shared -nostdlib -Wl,--version-script=link.T
+	fpic := -fPIC -DPIC
+	CFLAGS += -fomit-frame-pointer -ffast-math -march=mips32 -mtune=mips32r2 -mhard-float
+	# The ASM code and/or MIPS dynarec of GPSP does not respect
+	# MIPS calling conventions, so we must use '-fno-caller-saves'
+	# for the OpenDingux Beta build
+	CFLAGS += -fno-caller-saves
+	HAVE_DYNAREC := 1
+	CPU_ARCH := mips
 
 # Windows
 else
 	TARGET := $(TARGET_NAME)_libretro.dll
-	CC = gcc
+	CC ?= gcc
 	SHARED := -shared -static-libgcc -static-libstdc++ -s -Wl,--version-script=link.T
 	CFLAGS += -D__WIN32__ -D__WIN32_LIBRETRO__
 	ifeq ($(HAVE_DYNAREC),1)
@@ -374,6 +435,7 @@ ifeq ($(FORCE_32BIT_ARCH), 1)
 fpic :=
 endif
 
+# Add -DTRACE_INSTRUCTIONS to trace instruction execution
 ifeq ($(DEBUG), 1)
 	OPTIMIZE_SAFE := -O0 -g
 	OPTIMIZE      := -O0 -g
@@ -395,6 +457,10 @@ endif
 
 ifeq ($(CPU_ARCH), arm)
 DEFINES += -DARM_ARCH
+else ifeq ($(CPU_ARCH), mips)
+DEFINES += -DMIPS_ARCH
+else ifeq ($(CPU_ARCH), x86_32)
+DEFINES += -DX86_ARCH
 endif
 
 
@@ -403,7 +469,7 @@ CODE_DEFINES =
 
 COMMON_DEFINES += $(CODE_DEFINES) $(WARNINGS_DEFINES) -DNDEBUG=1 $(fpic)
 
-CFLAGS += $(DEFINES) $(COMMON_DEFINES) -Werror=implicit-function-declaration
+CFLAGS += $(DEFINES) $(COMMON_DEFINES)
 
 ifeq ($(FRONTEND_SUPPORTS_RGB565), 1)
 	CFLAGS += -DFRONTEND_SUPPORTS_RGB565
@@ -412,10 +478,10 @@ endif
 
 ifeq ($(platform), ctr)
 ifeq ($(HAVE_DYNAREC), 1)
-OBJECTS += 3ds/3ds_utils.o
+OBJECTS += 3ds/3ds_utils.o 3ds/3ds_cache_utils.o
 
 ifeq ($(strip $(CTRULIB)),)
-$(error "Please set CTRULIB in your environment. export CTRULIB=<path to>ctrulib")
+$(error "Please set CTRULIB in your environment. export CTRULIB=<path to>libctru")
 endif
 
 CFLAGS  += -I$(CTRULIB)/include
@@ -441,9 +507,6 @@ endif
 
 cpu_threaded.o: cpu_threaded.c
 	$(CC) $(CFLAGS) -Wno-unused-variable -Wno-unused-label $(OPTIMIZE_SAFE) $(INCDIRS) -c -o $@ $<
-
-libco/libco.o: libco/libco.c
-	$(CC) $(INCFLAGS) $(CFLAGS) -O3 -DNDEBUG -c  -o $@ $<
 
 %.o: %.S
 	$(CC) $(ASFLAGS) $(CFLAGS) $(OPTIMIZE) -c -o $@ $<

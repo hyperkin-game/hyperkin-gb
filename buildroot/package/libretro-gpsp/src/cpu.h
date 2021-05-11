@@ -20,6 +20,8 @@
 #ifndef CPU_H
 #define CPU_H
 
+#include "gpsp_config.h"
+
 // System mode and user mode are represented as the same here
 
 typedef enum
@@ -82,14 +84,15 @@ typedef enum
   REG_SAVE3         = 23,
   CPU_MODE          = 29,
   CPU_HALT_STATE    = 30,
-  CHANGED_PC_STATUS = 31
+  CHANGED_PC_STATUS = 31,
+  COMPLETED_FRAME   = 32,
+  OAM_UPDATED       = 33
 } ext_reg_numbers;
 
 typedef enum
 {
   TRANSLATION_REGION_RAM,
   TRANSLATION_REGION_ROM,
-  TRANSLATION_REGION_BIOS
 } translation_region_type;
 
 extern u32 instruction_count;
@@ -99,90 +102,63 @@ void execute_arm(u32 cycles);
 void raise_interrupt(irq_type irq_raised);
 void set_cpu_mode(cpu_mode_type new_mode);
 
-u32 execute_load_u8(u32 address);
-u32 execute_load_u16(u32 address);
-u32 execute_load_u32(u32 address);
-u32 execute_load_s8(u32 address);
-u32 execute_load_s16(u32 address);
-void execute_store_u8(u32 address, u32 source);
-void execute_store_u16(u32 address, u32 source);
-void execute_store_u32(u32 address, u32 source);
-u32 execute_arm_translate(u32 cycles);
+u32 function_cc execute_load_u8(u32 address);
+u32 function_cc execute_load_u16(u32 address);
+u32 function_cc execute_load_u32(u32 address);
+u32 function_cc execute_load_s8(u32 address);
+u32 function_cc execute_load_s16(u32 address);
+void function_cc execute_store_u8(u32 address, u32 source);
+void function_cc execute_store_u16(u32 address, u32 source);
+void function_cc execute_store_u32(u32 address, u32 source);
+u32 function_cc execute_arm_translate(u32 cycles);
 void init_translater(void);
 void cpu_write_savestate(void);
 void cpu_read_savestate(void);
 
-u8 *block_lookup_address_arm(u32 pc);
-u8 *block_lookup_address_thumb(u32 pc);
+u8 function_cc *block_lookup_address_arm(u32 pc);
+u8 function_cc *block_lookup_address_thumb(u32 pc);
+u8 function_cc *block_lookup_address_dual(u32 pc);
 s32 translate_block_arm(u32 pc, translation_region_type translation_region,
  u32 smc_enable);
 s32 translate_block_thumb(u32 pc, translation_region_type translation_region,
  u32 smc_enable);
 
-#if defined(PSP_BUILD)
-
-#define ROM_TRANSLATION_CACHE_SIZE (1024 * 512 * 4)
-#define RAM_TRANSLATION_CACHE_SIZE (1024 * 384)
-#define BIOS_TRANSLATION_CACHE_SIZE (1024 * 128)
-#define TRANSLATION_CACHE_LIMIT_THRESHOLD (1024)
-
-#else
-
-#define ROM_TRANSLATION_CACHE_SIZE (1024 * 512 * 4 * 5)
-#define RAM_TRANSLATION_CACHE_SIZE (1024 * 384 * 2)
-#define BIOS_TRANSLATION_CACHE_SIZE (1024 * 128 * 2)
-#define TRANSLATION_CACHE_LIMIT_THRESHOLD (1024 * 32)
-
-#endif
-
 #if defined(HAVE_MMAP)
 extern u8* rom_translation_cache;
 extern u8* ram_translation_cache;
-extern u8* bios_translation_cache;
 #elif defined(_3DS)
 #define rom_translation_cache ((u8*)0x02000000 - ROM_TRANSLATION_CACHE_SIZE)
 #define ram_translation_cache (rom_translation_cache - RAM_TRANSLATION_CACHE_SIZE)
-#define bios_translation_cache (ram_translation_cache - BIOS_TRANSLATION_CACHE_SIZE)
 extern u8* rom_translation_cache_ptr;
 extern u8* ram_translation_cache_ptr;
-extern u8* bios_translation_cache_ptr;
 #elif defined(VITA)
 extern u8* rom_translation_cache;
 extern u8* ram_translation_cache;
-extern u8* bios_translation_cache;
 extern int sceBlock;
 #else
 extern u8 rom_translation_cache[ROM_TRANSLATION_CACHE_SIZE];
 extern u8 ram_translation_cache[RAM_TRANSLATION_CACHE_SIZE];
-extern u8 bios_translation_cache[BIOS_TRANSLATION_CACHE_SIZE];
 #endif
+extern u32 stub_arena[STUB_ARENA_SIZE / 4];
 extern u8 *rom_translation_ptr;
 extern u8 *ram_translation_ptr;
-extern u8 *bios_translation_ptr;
 
 #define MAX_TRANSLATION_GATES 8
 
 extern u32 idle_loop_target_pc;
-extern u32 force_pc_update_target;
 extern u32 iwram_stack_optimize;
-extern u32 allow_smc_ram_u8;
-extern u32 allow_smc_ram_u16;
-extern u32 allow_smc_ram_u32;
-extern u32 direct_map_vram;
 extern u32 translation_gate_targets;
 extern u32 translation_gate_target_pc[MAX_TRANSLATION_GATES];
 
 extern u32 in_interrupt;
 
-#define ROM_BRANCH_HASH_SIZE (1024 * 64)
-
-/* EDIT: Shouldn't this be extern ?! */
 extern u32 *rom_branch_hash[ROM_BRANCH_HASH_SIZE];
 
 void flush_translation_cache_rom(void);
 void flush_translation_cache_ram(void);
-void flush_translation_cache_bios(void);
 void dump_translation_cache(void);
+void init_caches(void);
+void init_emitter(void);
 
 extern u32 reg_mode[7][7];
 extern u32 spsr[6];

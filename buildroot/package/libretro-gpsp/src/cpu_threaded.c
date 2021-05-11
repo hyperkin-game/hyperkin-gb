@@ -29,52 +29,28 @@
 
 u8 *last_rom_translation_ptr = NULL;
 u8 *last_ram_translation_ptr = NULL;
-u8 *last_bios_translation_ptr = NULL;
 
 #if defined(HAVE_MMAP)
 u8* rom_translation_cache;
 u8* ram_translation_cache;
-u8* bios_translation_cache;
 u8 *rom_translation_ptr;
 u8 *ram_translation_ptr;
-u8 *bios_translation_ptr;
 #elif defined(VITA)
 u8* rom_translation_cache;
 u8* ram_translation_cache;
-u8* bios_translation_cache;
 u8 *rom_translation_ptr;
 u8 *ram_translation_ptr;
-u8 *bios_translation_ptr;
 int sceBlock;
 #elif defined(_3DS) 
 u8* rom_translation_cache_ptr;
 u8* ram_translation_cache_ptr;
-u8* bios_translation_cache_ptr;
 u8 *rom_translation_ptr = rom_translation_cache;
 u8 *ram_translation_ptr = ram_translation_cache;
-u8 *bios_translation_ptr = bios_translation_cache;
-#elif defined(ARM_MEMORY_DYNAREC)
-__asm__(".section .jit,\"awx\",%progbits");
-
-u8 rom_translation_cache[ROM_TRANSLATION_CACHE_SIZE]
-		__attribute__ ((aligned(4),section(".jit")));
-u8 *rom_translation_ptr = rom_translation_cache;
-
-u8 ram_translation_cache[RAM_TRANSLATION_CACHE_SIZE]
-		__attribute__ ((aligned(4),section(".jit")));
-u8 *ram_translation_ptr = ram_translation_cache;
-
-u8 bios_translation_cache[BIOS_TRANSLATION_CACHE_SIZE]
-		__attribute__ ((aligned(4),section(".jit")));
-u8 *bios_translation_ptr = bios_translation_cache;
 #else
-u8 rom_translation_cache[ROM_TRANSLATION_CACHE_SIZE];
-u8 ram_translation_cache[RAM_TRANSLATION_CACHE_SIZE];
-u8 bios_translation_cache[BIOS_TRANSLATION_CACHE_SIZE];
 u8 *rom_translation_ptr = rom_translation_cache;
 u8 *ram_translation_ptr = ram_translation_cache;
-u8 *bios_translation_ptr = bios_translation_cache;
 #endif
+/* Note, see stub files for more cache definitions */
 
 u32 iwram_code_min = 0xFFFFFFFF;
 u32 iwram_code_max = 0xFFFFFFFF;
@@ -83,12 +59,6 @@ u32 ewram_code_max = 0xFFFFFFFF;
 
 
 u32 *rom_branch_hash[ROM_BRANCH_HASH_SIZE];
-
-// Default
-u32 force_pc_update_target = 0xFFFFFFFF;
-u32 allow_smc_ram_u8 = 1;
-u32 allow_smc_ram_u16 = 1;
-u32 allow_smc_ram_u32 = 1;
 
 typedef struct
 {
@@ -226,99 +196,55 @@ extern u8 bit_count[256];
 #define thumb_decode_branch()                                                 \
   u32 offset = opcode & 0x07FF                                                \
 
-
-#ifdef PSP_BUILD
-
-#include "psp/mips_emit.h"
-
+/* Include the right emitter headers */
+#if defined(MIPS_ARCH)
+  #include "psp/mips_emit.h"
 #elif defined(ARM_ARCH)
-
-#include "arm/arm_emit.h"
-
+  #include "arm/arm_emit.h"
 #else
-
-#include "x86/x86_emit.h"
-
+  #include "x86/x86_emit.h"
 #endif
-
-static INLINE void RW_INIT(void)
-{
-#ifdef VITA
-   sceKernelOpenVMDomain();
-#endif
-}
-
-static INLINE void RW_END(void)
-{
-#ifdef VITA
-   sceKernelCloseVMDomain();
-#endif
-}
 
 /* Cache invalidation */
 
-#if defined(PSP_BUILD)
-#define translate_invalidate_dcache() sceKernelDcacheWritebackAll()
+#if defined(PSP)
+  void platform_cache_sync(void *baseaddr, void *endptr) {
+    sceKernelDcacheWritebackRange(baseaddr, ((char*)endptr) - ((char*)baseaddr));
+    sceKernelIcacheInvalidateRange(baseaddr, ((char*)endptr) - ((char*)baseaddr));
+  }
 #elif defined(VITA)
-#define translate_invalidate_dcache_one(which)                                \
-  if (which##_translation_ptr > last_##which##_translation_ptr)               \
-  {   	                                             \
-    sceKernelSyncVMDomain(sceBlock,last_##which##_translation_ptr,          \
-      which##_translation_ptr - last_##which##_translation_ptr);              \
+  void platform_cache_sync(void *baseaddr, void *endptr) {
+    sceKernelSyncVMDomain(sceBlock, baseaddr, ((char*)endptr) - ((char*)baseaddr) + 64);
   }
-
-#define translate_invalidate_dcache()                                         \
-{                                                                             \
-  translate_invalidate_dcache_one(rom)                                        \
-  translate_invalidate_dcache_one(ram)                                        \
-  translate_invalidate_dcache_one(bios)                                       \
-}
-
-#define invalidate_icache_region(addr, size) (void)0
-
 #elif defined(_3DS)
-#include "3ds/3ds_utils.h"
-
-#define translate_invalidate_dcache() ctr_flush_invalidate_cache()
-#define invalidate_icache_region(addr, size) (void)0
-
-#elif defined(ARM_ARCH)
-static int sys_cacheflush(void *addr, unsigned long size)
-{
-   void *start = (void*)addr;
-   void *end   = (void*)(char *)addr + size;
-
-	register const unsigned char *r0 asm("r0") = start;
-	register const unsigned char *r1 asm("r1") = end;
-	register const int r2 asm("r2") = 0;
-	register const int r7 asm("r7") = 0xf0002;
-	asm volatile ("svc 0x0" :: "r" (r0), "r" (r1), "r" (r2), "r" (r7));
-   return -1;
-}
-
-#define translate_invalidate_dcache_one(which)                                \
-  if (which##_translation_ptr > last_##which##_translation_ptr)               \
-  {                                                                           \
-    sys_cacheflush(last_##which##_translation_ptr,          \
-      which##_translation_ptr - last_##which##_translation_ptr);              \
-    sys_cacheflush(last_##which##_translation_ptr, 32);\
-    last_##which##_translation_ptr = which##_translation_ptr;                 \
+  #include "3ds/3ds_utils.h"
+  void platform_cache_sync(void *baseaddr, void *endptr) {
+    ctr_flush_invalidate_cache();
   }
-
-#define translate_invalidate_dcache()                                         \
-{                                                                             \
-  translate_invalidate_dcache_one(rom)                                        \
-  translate_invalidate_dcache_one(ram)                                        \
-  translate_invalidate_dcache_one(bios)                                       \
-}
-#define invalidate_icache_region(addr, size) (void)0
-
+#elif defined(ARM_ARCH)
+  void platform_cache_sync(void *baseaddr, void *endptr) {
+    __clear_cache(baseaddr, endptr);
+  }
+#elif defined(MIPS_ARCH)
+  void platform_cache_sync(void *baseaddr, void *endptr) {
+    __builtin___clear_cache(baseaddr, endptr);
+  }
 #else
-
-#define translate_invalidate_dcache() (void)0
-#define invalidate_icache_region(addr, size) (void)0
-
+  /* x86 CPUs have icache consistency checks */
+  void platform_cache_sync(void *baseaddr, void *endptr) {}
 #endif
+
+void translate_icache_sync() {
+    // Cache emitted code can only grow
+    if (last_rom_translation_ptr < rom_translation_ptr) {
+        platform_cache_sync(last_rom_translation_ptr, rom_translation_ptr);
+        last_rom_translation_ptr = rom_translation_ptr;
+    }
+    if (last_ram_translation_ptr < ram_translation_ptr) {
+        platform_cache_sync(last_ram_translation_ptr, ram_translation_ptr);
+        last_ram_translation_ptr = ram_translation_ptr;
+    }
+}
 
 /* End of Cache invalidation */
 
@@ -338,6 +264,7 @@ static int sys_cacheflush(void *addr, unsigned long size)
   check_pc_region(pc);                                                        \
   opcode = address32(pc_address_block, (pc & 0x7FFF));                        \
   condition = block_data[block_data_position].condition;                      \
+  emit_trace_arm_instruction(pc);                                             \
                                                                               \
   if((condition != last_condition) || (condition >= 0x20))                    \
   {                                                                           \
@@ -1777,8 +1704,10 @@ static int sys_cacheflush(void *addr, unsigned long size)
   check_pc_region(pc);                                                        \
   last_opcode = opcode;                                                       \
   opcode = address16(pc_address_block, (pc & 0x7FFF));                        \
+  emit_trace_thumb_instruction(pc);                                           \
+  u8 hiop = opcode >> 8;                                                      \
                                                                               \
-  switch((opcode >> 8) & 0xFF)                                                \
+  switch(hiop)                                                                \
   {                                                                           \
     case 0x00 ... 0x07:                                                       \
       /* LSL rd, rs, imm */                                                   \
@@ -1815,165 +1744,45 @@ static int sys_cacheflush(void *addr, unsigned long size)
       thumb_data_proc(add_sub_imm, subs, imm, rd, rs, imm);                   \
       break;                                                                  \
                                                                               \
-    case 0x20:                                                                \
-      /* MOV r0, imm */                                                       \
-      thumb_data_proc_unary(imm, movs, imm, 0, imm);                          \
-      break;                                                                  \
+    /* MOV r0..7, imm */                                                      \
+    case 0x20: thumb_data_proc_unary(imm, movs, imm, 0, imm); break;          \
+    case 0x21: thumb_data_proc_unary(imm, movs, imm, 1, imm); break;          \
+    case 0x22: thumb_data_proc_unary(imm, movs, imm, 2, imm); break;          \
+    case 0x23: thumb_data_proc_unary(imm, movs, imm, 3, imm); break;          \
+    case 0x24: thumb_data_proc_unary(imm, movs, imm, 4, imm); break;          \
+    case 0x25: thumb_data_proc_unary(imm, movs, imm, 5, imm); break;          \
+    case 0x26: thumb_data_proc_unary(imm, movs, imm, 6, imm); break;          \
+    case 0x27: thumb_data_proc_unary(imm, movs, imm, 7, imm); break;          \
                                                                               \
-    case 0x21:                                                                \
-      /* MOV r1, imm */                                                       \
-      thumb_data_proc_unary(imm, movs, imm, 1, imm);                          \
-      break;                                                                  \
+    /* CMP r0, imm */                                                         \
+    case 0x28: thumb_data_proc_test(imm, cmp, imm, 0, imm); break;            \
+    case 0x29: thumb_data_proc_test(imm, cmp, imm, 1, imm); break;            \
+    case 0x2A: thumb_data_proc_test(imm, cmp, imm, 2, imm); break;            \
+    case 0x2B: thumb_data_proc_test(imm, cmp, imm, 3, imm); break;            \
+    case 0x2C: thumb_data_proc_test(imm, cmp, imm, 4, imm); break;            \
+    case 0x2D: thumb_data_proc_test(imm, cmp, imm, 5, imm); break;            \
+    case 0x2E: thumb_data_proc_test(imm, cmp, imm, 6, imm); break;            \
+    case 0x2F: thumb_data_proc_test(imm, cmp, imm, 7, imm); break;            \
                                                                               \
-    case 0x22:                                                                \
-      /* MOV r2, imm */                                                       \
-      thumb_data_proc_unary(imm, movs, imm, 2, imm);                          \
-      break;                                                                  \
+    /* ADD r0..7, imm */                                                      \
+    case 0x30: thumb_data_proc(imm, adds, imm, 0, 0, imm); break;             \
+    case 0x31: thumb_data_proc(imm, adds, imm, 1, 1, imm); break;             \
+    case 0x32: thumb_data_proc(imm, adds, imm, 2, 2, imm); break;             \
+    case 0x33: thumb_data_proc(imm, adds, imm, 3, 3, imm); break;             \
+    case 0x34: thumb_data_proc(imm, adds, imm, 4, 4, imm); break;             \
+    case 0x35: thumb_data_proc(imm, adds, imm, 5, 5, imm); break;             \
+    case 0x36: thumb_data_proc(imm, adds, imm, 6, 6, imm); break;             \
+    case 0x37: thumb_data_proc(imm, adds, imm, 7, 7, imm); break;             \
                                                                               \
-    case 0x23:                                                                \
-      /* MOV r3, imm */                                                       \
-      thumb_data_proc_unary(imm, movs, imm, 3, imm);                          \
-      break;                                                                  \
-                                                                              \
-    case 0x24:                                                                \
-      /* MOV r4, imm */                                                       \
-      thumb_data_proc_unary(imm, movs, imm, 4, imm);                          \
-      break;                                                                  \
-                                                                              \
-    case 0x25:                                                                \
-      /* MOV r5, imm */                                                       \
-      thumb_data_proc_unary(imm, movs, imm, 5, imm);                          \
-      break;                                                                  \
-                                                                              \
-    case 0x26:                                                                \
-      /* MOV r6, imm */                                                       \
-      thumb_data_proc_unary(imm, movs, imm, 6, imm);                          \
-      break;                                                                  \
-                                                                              \
-    case 0x27:                                                                \
-      /* MOV r7, imm */                                                       \
-      thumb_data_proc_unary(imm, movs, imm, 7, imm);                          \
-      break;                                                                  \
-                                                                              \
-    case 0x28:                                                                \
-      /* CMP r0, imm */                                                       \
-      thumb_data_proc_test(imm, cmp, imm, 0, imm);                            \
-      break;                                                                  \
-                                                                              \
-    case 0x29:                                                                \
-      /* CMP r1, imm */                                                       \
-      thumb_data_proc_test(imm, cmp, imm, 1, imm);                            \
-      break;                                                                  \
-                                                                              \
-    case 0x2A:                                                                \
-      /* CMP r2, imm */                                                       \
-      thumb_data_proc_test(imm, cmp, imm, 2, imm);                            \
-      break;                                                                  \
-                                                                              \
-    case 0x2B:                                                                \
-      /* CMP r3, imm */                                                       \
-      thumb_data_proc_test(imm, cmp, imm, 3, imm);                            \
-      break;                                                                  \
-                                                                              \
-    case 0x2C:                                                                \
-      /* CMP r4, imm */                                                       \
-      thumb_data_proc_test(imm, cmp, imm, 4, imm);                            \
-      break;                                                                  \
-                                                                              \
-    case 0x2D:                                                                \
-      /* CMP r5, imm */                                                       \
-      thumb_data_proc_test(imm, cmp, imm, 5, imm);                            \
-      break;                                                                  \
-                                                                              \
-    case 0x2E:                                                                \
-      /* CMP r6, imm */                                                       \
-      thumb_data_proc_test(imm, cmp, imm, 6, imm);                            \
-      break;                                                                  \
-                                                                              \
-    case 0x2F:                                                                \
-      /* CMP r7, imm */                                                       \
-      thumb_data_proc_test(imm, cmp, imm, 7, imm);                            \
-      break;                                                                  \
-                                                                              \
-    case 0x30:                                                                \
-      /* ADD r0, imm */                                                       \
-      thumb_data_proc(imm, adds, imm, 0, 0, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x31:                                                                \
-      /* ADD r1, imm */                                                       \
-      thumb_data_proc(imm, adds, imm, 1, 1, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x32:                                                                \
-      /* ADD r2, imm */                                                       \
-      thumb_data_proc(imm, adds, imm, 2, 2, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x33:                                                                \
-      /* ADD r3, imm */                                                       \
-      thumb_data_proc(imm, adds, imm, 3, 3, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x34:                                                                \
-      /* ADD r4, imm */                                                       \
-      thumb_data_proc(imm, adds, imm, 4, 4, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x35:                                                                \
-      /* ADD r5, imm */                                                       \
-      thumb_data_proc(imm, adds, imm, 5, 5, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x36:                                                                \
-      /* ADD r6, imm */                                                       \
-      thumb_data_proc(imm, adds, imm, 6, 6, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x37:                                                                \
-      /* ADD r7, imm */                                                       \
-      thumb_data_proc(imm, adds, imm, 7, 7, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x38:                                                                \
-      /* SUB r0, imm */                                                       \
-      thumb_data_proc(imm, subs, imm, 0, 0, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x39:                                                                \
-      /* SUB r1, imm */                                                       \
-      thumb_data_proc(imm, subs, imm, 1, 1, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x3A:                                                                \
-      /* SUB r2, imm */                                                       \
-      thumb_data_proc(imm, subs, imm, 2, 2, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x3B:                                                                \
-      /* SUB r3, imm */                                                       \
-      thumb_data_proc(imm, subs, imm, 3, 3, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x3C:                                                                \
-      /* SUB r4, imm */                                                       \
-      thumb_data_proc(imm, subs, imm, 4, 4, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x3D:                                                                \
-      /* SUB r5, imm */                                                       \
-      thumb_data_proc(imm, subs, imm, 5, 5, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x3E:                                                                \
-      /* SUB r6, imm */                                                       \
-      thumb_data_proc(imm, subs, imm, 6, 6, imm);                             \
-      break;                                                                  \
-                                                                              \
-    case 0x3F:                                                                \
-      /* SUB r7, imm */                                                       \
-      thumb_data_proc(imm, subs, imm, 7, 7, imm);                             \
-      break;                                                                  \
+    /* SUB r0..7, imm */                                                      \
+    case 0x38: thumb_data_proc(imm, subs, imm, 0, 0, imm); break;             \
+    case 0x39: thumb_data_proc(imm, subs, imm, 1, 1, imm); break;             \
+    case 0x3A: thumb_data_proc(imm, subs, imm, 2, 2, imm); break;             \
+    case 0x3B: thumb_data_proc(imm, subs, imm, 3, 3, imm); break;             \
+    case 0x3C: thumb_data_proc(imm, subs, imm, 4, 4, imm); break;             \
+    case 0x3D: thumb_data_proc(imm, subs, imm, 5, 5, imm); break;             \
+    case 0x3E: thumb_data_proc(imm, subs, imm, 6, 6, imm); break;             \
+    case 0x3F: thumb_data_proc(imm, subs, imm, 7, 7, imm); break;             \
                                                                               \
     case 0x40:                                                                \
       switch((opcode >> 6) & 0x03)                                            \
@@ -2095,52 +1904,21 @@ static int sys_cacheflush(void *addr, unsigned long size)
       thumb_bx();                                                             \
       break;                                                                  \
                                                                               \
-    case 0x48:                                                                \
-      /* LDR r0, [pc + imm] */                                                \
-      thumb_access_memory(load, imm, 0, 0, 0, pc_relative,                    \
-       (pc & ~2) + (imm * 4) + 4, u32);                                       \
-      break;                                                                  \
-                                                                              \
-    case 0x49:                                                                \
-      /* LDR r1, [pc + imm] */                                                \
-      thumb_access_memory(load, imm, 1, 0, 0, pc_relative,                    \
-       (pc & ~2) + (imm * 4) + 4, u32);                                       \
-      break;                                                                  \
-                                                                              \
-    case 0x4A:                                                                \
-      /* LDR r2, [pc + imm] */                                                \
-      thumb_access_memory(load, imm, 2, 0, 0, pc_relative,                    \
-       (pc & ~2) + (imm * 4) + 4, u32);                                       \
-      break;                                                                  \
-                                                                              \
-    case 0x4B:                                                                \
-      /* LDR r3, [pc + imm] */                                                \
-      thumb_access_memory(load, imm, 3, 0, 0, pc_relative,                    \
-       (pc & ~2) + (imm * 4) + 4, u32);                                       \
-      break;                                                                  \
-                                                                              \
-    case 0x4C:                                                                \
-      /* LDR r4, [pc + imm] */                                                \
-      thumb_access_memory(load, imm, 4, 0, 0, pc_relative,                    \
-       (pc & ~2) + (imm * 4) + 4, u32);                                       \
-      break;                                                                  \
-                                                                              \
-    case 0x4D:                                                                \
-      /* LDR r5, [pc + imm] */                                                \
-      thumb_access_memory(load, imm, 5, 0, 0, pc_relative,                    \
-       (pc & ~2) + (imm * 4) + 4, u32);                                       \
-      break;                                                                  \
-                                                                              \
-    case 0x4E:                                                                \
-      /* LDR r6, [pc + imm] */                                                \
-      thumb_access_memory(load, imm, 6, 0, 0, pc_relative,                    \
-       (pc & ~2) + (imm * 4) + 4, u32);                                       \
-      break;                                                                  \
-                                                                              \
-    case 0x4F:                                                                \
-      /* LDR r7, [pc + imm] */                                                \
-      thumb_access_memory(load, imm, 7, 0, 0, pc_relative,                    \
-       (pc & ~2) + (imm * 4) + 4, u32);                                       \
+    case 0x48 ... 0x4F:                                                       \
+      /* LDR r0..7, [pc + imm] */                                             \
+      {                                                                       \
+        thumb_decode_imm();                                                   \
+        u32 rdreg = (hiop & 7);                                               \
+        u32 aoff = (pc & ~2) + (imm*4) + 4;                                   \
+        /* ROM + same page -> optimize as const load */                       \
+        if (translation_region == TRANSLATION_REGION_ROM &&                   \
+            (((aoff + 4) >> 15) == (pc >> 15))) {                             \
+          u32 value = address32(pc_address_block, (aoff & 0x7FFF));           \
+          thumb_load_pc_pool_const(rdreg, value);                             \
+        } else {                                                              \
+          thumb_access_memory(load, imm, rdreg, 0, 0, pc_relative, aoff, u32);\
+        }                                                                     \
+      }                                                                       \
       break;                                                                  \
                                                                               \
     case 0x50 ... 0x51:                                                       \
@@ -2215,165 +1993,77 @@ static int sys_cacheflush(void *addr, unsigned long size)
       thumb_access_memory(load, mem_imm, rd, rb, 0, reg_imm, (imm * 2), u16); \
       break;                                                                  \
                                                                               \
+    /* STR r0..7, [sp + imm] */                                               \
     case 0x90:                                                                \
-      /* STR r0, [sp + imm] */                                                \
       thumb_access_memory(store, imm, 0, 13, 0, reg_imm_sp, imm, u32);        \
       break;                                                                  \
-                                                                              \
     case 0x91:                                                                \
-      /* STR r1, [sp + imm] */                                                \
       thumb_access_memory(store, imm, 1, 13, 0, reg_imm_sp, imm, u32);        \
       break;                                                                  \
-                                                                              \
     case 0x92:                                                                \
-      /* STR r2, [sp + imm] */                                                \
       thumb_access_memory(store, imm, 2, 13, 0, reg_imm_sp, imm, u32);        \
       break;                                                                  \
-                                                                              \
     case 0x93:                                                                \
-      /* STR r3, [sp + imm] */                                                \
       thumb_access_memory(store, imm, 3, 13, 0, reg_imm_sp, imm, u32);        \
       break;                                                                  \
-                                                                              \
     case 0x94:                                                                \
-      /* STR r4, [sp + imm] */                                                \
       thumb_access_memory(store, imm, 4, 13, 0, reg_imm_sp, imm, u32);        \
       break;                                                                  \
-                                                                              \
     case 0x95:                                                                \
-      /* STR r5, [sp + imm] */                                                \
       thumb_access_memory(store, imm, 5, 13, 0, reg_imm_sp, imm, u32);        \
       break;                                                                  \
-                                                                              \
     case 0x96:                                                                \
-      /* STR r6, [sp + imm] */                                                \
       thumb_access_memory(store, imm, 6, 13, 0, reg_imm_sp, imm, u32);        \
       break;                                                                  \
-                                                                              \
     case 0x97:                                                                \
-      /* STR r7, [sp + imm] */                                                \
       thumb_access_memory(store, imm, 7, 13, 0, reg_imm_sp, imm, u32);        \
       break;                                                                  \
                                                                               \
+    /* LDR r0..7, [sp + imm] */                                               \
     case 0x98:                                                                \
-      /* LDR r0, [sp + imm] */                                                \
       thumb_access_memory(load, imm, 0, 13, 0, reg_imm_sp, imm, u32);         \
       break;                                                                  \
-                                                                              \
     case 0x99:                                                                \
-      /* LDR r1, [sp + imm] */                                                \
       thumb_access_memory(load, imm, 1, 13, 0, reg_imm_sp, imm, u32);         \
       break;                                                                  \
-                                                                              \
     case 0x9A:                                                                \
-      /* LDR r2, [sp + imm] */                                                \
       thumb_access_memory(load, imm, 2, 13, 0, reg_imm_sp, imm, u32);         \
       break;                                                                  \
-                                                                              \
     case 0x9B:                                                                \
-      /* LDR r3, [sp + imm] */                                                \
       thumb_access_memory(load, imm, 3, 13, 0, reg_imm_sp, imm, u32);         \
       break;                                                                  \
-                                                                              \
     case 0x9C:                                                                \
-      /* LDR r4, [sp + imm] */                                                \
       thumb_access_memory(load, imm, 4, 13, 0, reg_imm_sp, imm, u32);         \
       break;                                                                  \
-                                                                              \
     case 0x9D:                                                                \
-      /* LDR r5, [sp + imm] */                                                \
       thumb_access_memory(load, imm, 5, 13, 0, reg_imm_sp, imm, u32);         \
       break;                                                                  \
-                                                                              \
     case 0x9E:                                                                \
-      /* LDR r6, [sp + imm] */                                                \
       thumb_access_memory(load, imm, 6, 13, 0, reg_imm_sp, imm, u32);         \
       break;                                                                  \
-                                                                              \
     case 0x9F:                                                                \
-      /* LDR r7, [sp + imm] */                                                \
       thumb_access_memory(load, imm, 7, 13, 0, reg_imm_sp, imm, u32);         \
       break;                                                                  \
                                                                               \
-    case 0xA0:                                                                \
-      /* ADD r0, pc, +imm */                                                  \
-      thumb_load_pc(0);                                                       \
-      break;                                                                  \
+    /* ADD r0..7, pc, +imm */                                                 \
+    case 0xA0: thumb_load_pc(0); break;                                       \
+    case 0xA1: thumb_load_pc(1); break;                                       \
+    case 0xA2: thumb_load_pc(2); break;                                       \
+    case 0xA3: thumb_load_pc(3); break;                                       \
+    case 0xA4: thumb_load_pc(4); break;                                       \
+    case 0xA5: thumb_load_pc(5); break;                                       \
+    case 0xA6: thumb_load_pc(6); break;                                       \
+    case 0xA7: thumb_load_pc(7); break;                                       \
                                                                               \
-    case 0xA1:                                                                \
-      /* ADD r1, pc, +imm */                                                  \
-      thumb_load_pc(1);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xA2:                                                                \
-      /* ADD r2, pc, +imm */                                                  \
-      thumb_load_pc(2);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xA3:                                                                \
-      /* ADD r3, pc, +imm */                                                  \
-      thumb_load_pc(3);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xA4:                                                                \
-      /* ADD r4, pc, +imm */                                                  \
-      thumb_load_pc(4);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xA5:                                                                \
-      /* ADD r5, pc, +imm */                                                  \
-      thumb_load_pc(5);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xA6:                                                                \
-      /* ADD r6, pc, +imm */                                                  \
-      thumb_load_pc(6);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xA7:                                                                \
-      /* ADD r7, pc, +imm */                                                  \
-      thumb_load_pc(7);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xA8:                                                                \
-      /* ADD r0, sp, +imm */                                                  \
-      thumb_load_sp(0);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xA9:                                                                \
-      /* ADD r1, sp, +imm */                                                  \
-      thumb_load_sp(1);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xAA:                                                                \
-      /* ADD r2, sp, +imm */                                                  \
-      thumb_load_sp(2);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xAB:                                                                \
-      /* ADD r3, sp, +imm */                                                  \
-      thumb_load_sp(3);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xAC:                                                                \
-      /* ADD r4, sp, +imm */                                                  \
-      thumb_load_sp(4);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xAD:                                                                \
-      /* ADD r5, sp, +imm */                                                  \
-      thumb_load_sp(5);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xAE:                                                                \
-      /* ADD r6, sp, +imm */                                                  \
-      thumb_load_sp(6);                                                       \
-      break;                                                                  \
-                                                                              \
-    case 0xAF:                                                                \
-      /* ADD r7, sp, +imm */                                                  \
-      thumb_load_sp(7);                                                       \
-      break;                                                                  \
+    /* ADD r0..7, sp, +imm */                                                 \
+    case 0xA8: thumb_load_sp(0); break;                                       \
+    case 0xA9: thumb_load_sp(1); break;                                       \
+    case 0xAA: thumb_load_sp(2); break;                                       \
+    case 0xAB: thumb_load_sp(3); break;                                       \
+    case 0xAC: thumb_load_sp(4); break;                                       \
+    case 0xAD: thumb_load_sp(5); break;                                       \
+    case 0xAE: thumb_load_sp(6); break;                                       \
+    case 0xAF: thumb_load_sp(7); break;                                       \
                                                                               \
     case 0xB0 ... 0xB3:                                                       \
       if((opcode >> 7) & 0x01)                                                \
@@ -2740,9 +2430,6 @@ static int sys_cacheflush(void *addr, unsigned long size)
 u8 *ram_block_ptrs[1024 * 64];
 u32 ram_block_tag_top = 0x0101;
 
-u8 *bios_block_ptrs[1024 * 8];
-u32 bios_block_tag_top = 0x0101;
-
 // This function will return a pointer to a translated block of code. If it
 // doesn't exist it will translate it, if it does it will pass it back.
 
@@ -2772,7 +2459,6 @@ u32 bios_block_tag_top = 0x0101;
 
 #define ram_translation_region  TRANSLATION_REGION_RAM
 #define rom_translation_region  TRANSLATION_REGION_ROM
-#define bios_translation_region TRANSLATION_REGION_BIOS
 
 #define block_lookup_translate_arm(mem_type, smc_enable)                      \
   translation_result = translate_block_arm(pc, mem_type##_translation_region, \
@@ -2842,7 +2528,7 @@ u32 bios_block_tag_top = 0x0101;
     }                                                                         \
                                                                               \
     if(translation_recursion_level == 0)                                      \
-      translate_invalidate_dcache();                                          \
+      translate_icache_sync();                                                \
   }                                                                           \
   else                                                                        \
   {                                                                           \
@@ -2854,7 +2540,7 @@ u32 translation_flush_count = 0;
 
 
 #define block_lookup_address_builder(type)                                    \
-u8 *block_lookup_address_##type(u32 pc)                           	      \
+u8 function_cc *block_lookup_address_##type(u32 pc)                           \
 {                                                                             \
   u16 *location;                                                              \
   u32 block_tag;                                                              \
@@ -2863,34 +2549,22 @@ u8 *block_lookup_address_##type(u32 pc)                           	      \
   /* Starting at the beginning, we allow for one translation cache flush. */  \
   if(translation_recursion_level == 0){                                       \
     translation_flush_count = 0;                                              \
-		                                                              \
-	}																																						\
+  }	                                                                          \
   block_lookup_address_pc_##type();                                           \
                                                                               \
   switch(pc >> 24)                                                            \
   {                                                                           \
-    case 0x0:                                                                 \
-      bios_region_read_allow();                                               \
-      location = (u16 *)(bios_rom + pc + 0x4000);                             \
-      block_lookup_translate(type, bios, 0);                                  \
-      if(translation_recursion_level == 0)                                    \
-        bios_region_read_allow();                                             \
-      break;                                                                  \
-                                                                              \
     case 0x2:                                                                 \
-      location = (u16 *)(ewram + (pc & 0x7FFF) + ((pc & 0x38000) * 2));       \
+      location = (u16 *)(ewram + (pc & 0x3FFFF) + 0x40000);                   \
       block_lookup_translate(type, ram, 1);                                   \
-      if(translation_recursion_level == 0)                                    \
-        bios_region_read_protect();                                           \
       break;                                                                  \
                                                                               \
     case 0x3:                                                                 \
       location = (u16 *)(iwram + (pc & 0x7FFF));                              \
       block_lookup_translate(type, ram, 1);                                   \
-      if(translation_recursion_level == 0)                                    \
-        bios_region_read_protect();                                           \
       break;                                                                  \
                                                                               \
+    case 0x0:                                                                 \
     case 0x8 ... 0xD:                                                         \
     {                                                                         \
       u32 hash_target = ((pc * 2654435761U) >> 16) &                          \
@@ -2914,7 +2588,7 @@ u8 *block_lookup_address_##type(u32 pc)                           	      \
                                                                               \
         redo:                                                                 \
                                                                               \
-        translation_recursion_level++;																				\
+        translation_recursion_level++;                                        \
         ((u32 *)rom_translation_ptr)[0] = pc;                                 \
         ((u32 **)rom_translation_ptr)[1] = NULL;                              \
         *block_ptr_address = (u32 *)rom_translation_ptr;                      \
@@ -2934,10 +2608,8 @@ u8 *block_lookup_address_##type(u32 pc)                           	      \
         }                                                                     \
                                                                               \
         if(translation_recursion_level == 0)                                  \
-          translate_invalidate_dcache();                                      \
+          translate_icache_sync();                                            \
       }                                                                       \
-      if(translation_recursion_level == 0)                                    \
-        bios_region_read_protect();                                           \
       break;                                                                  \
     }                                                                         \
                                                                               \
@@ -2959,7 +2631,7 @@ u8 *block_lookup_address_##type(u32 pc)                           	      \
       block_address = (u8 *)(-1);                                             \
       break;                                                                  \
   }                                                                           \
-                                                               		      \
+                                                                              \
   return block_address;                                                       \
 }                                                                             \
 
@@ -3189,18 +2861,22 @@ block_lookup_address_builder(dual);
 block_data_type block_data[MAX_BLOCK_SIZE];
 block_exit_type block_exits[MAX_EXITS];
 
-#define smc_write_arm_yes()                                                   \
-  if(address32(pc_address_block, (block_end_pc & 0x7FFF) - 0x8000) == 0x0000) \
+#define smc_write_arm_yes() {                                                 \
+  int offset = (pc < 0x03000000) ? 0x40000 : -0x8000;                         \
+  if(address32(pc_address_block, (block_end_pc & 0x7FFF) + offset) == 0)      \
   {                                                                           \
-    address32(pc_address_block, (block_end_pc & 0x7FFF) - 0x8000) =           \
+    address32(pc_address_block, (block_end_pc & 0x7FFF) + offset) =           \
      0xFFFFFFFF;                                                              \
   }                                                                           \
+}
 
-#define smc_write_thumb_yes()                                                 \
-  if(address16(pc_address_block, (block_end_pc & 0x7FFF) - 0x8000) == 0x0000) \
+#define smc_write_thumb_yes() {                                               \
+  int offset = (pc < 0x03000000) ? 0x40000 : -0x8000;                         \
+  if(address16(pc_address_block, (block_end_pc & 0x7FFF) + offset) == 0)      \
   {                                                                           \
-    address16(pc_address_block, (block_end_pc & 0x7FFF) - 0x8000) = 0xFFFF;   \
+    address16(pc_address_block, (block_end_pc & 0x7FFF) + offset) = 0xFFFF;   \
   }                                                                           \
+}
 
 #define smc_write_arm_no()                                                    \
 
@@ -3290,449 +2966,430 @@ block_exit_type block_exits[MAX_EXITS];
 #define thumb_fix_pc()                                                        \
   pc &= ~0x01                                                                 \
 
-s32 translate_block_arm(u32 pc, translation_region_type                    
- translation_region, u32 smc_enable)                                          
-{                                                                             
-  u32 opcode = 0;                                                             
-  u32 last_opcode;                                                            
-  u32 condition;                                                              
-  u32 last_condition;                                                         
-  u32 pc_region = (pc >> 15);                                                 
-  u32 new_pc_region;                                                          
-  u8 *pc_address_block = memory_map_read[pc_region];                          
-  u32 block_start_pc = pc;                                                    
-  u32 block_end_pc = pc;                                                      
-  u32 block_exit_position = 0;                                                
-  s32 block_data_position = 0;                                                
-  u32 external_block_exit_position = 0;                                       
-  u32 branch_target;                                                          
-  u32 cycle_count = 0;                                                        
-  u8 *translation_target;                                                     
-  u8 *backpatch_address = NULL;                                               
-  u8 *translation_ptr = NULL;                                                 
-  u8 *translation_cache_limit = NULL;                                         
-  s32 i;                                                                      
-  u32 flag_status;                                                            
-  block_exit_type external_block_exits[MAX_EXITS];      
-  generate_block_extra_vars_arm();                                         
-  arm_fix_pc();                                                            
-                                                                              
-  if(!pc_address_block)                                                
-    pc_address_block = load_gamepak_page(pc_region & 0x3FF);                  
-                                                                              
-  switch(translation_region)                                                  
-  {                                                                           
-    case TRANSLATION_REGION_RAM:                                              
-      if(pc >= 0x3000000)                                                     
-      {                                                                       
-        if((pc < iwram_code_min) || (iwram_code_min == 0xFFFFFFFF))           
-          iwram_code_min = pc;                                                
-      }                                                                       
-      else                                                                    
-                                                                              
-      if(pc >= 0x2000000)                                                     
-      {                                                                       
-        if((pc < ewram_code_min) || (ewram_code_min == 0xFFFFFFFF))           
-          ewram_code_min = pc;                                                
-      }                                                                       
-                                                                              
-      translation_ptr = ram_translation_ptr;                                  
-      translation_cache_limit =                                               
-       ram_translation_cache + RAM_TRANSLATION_CACHE_SIZE -                   
-       TRANSLATION_CACHE_LIMIT_THRESHOLD;                                     
-      break;                                                                  
-                                                                              
-    case TRANSLATION_REGION_ROM:                                              
-      translation_ptr = rom_translation_ptr;                                  
-      translation_cache_limit =                                               
-       rom_translation_cache + ROM_TRANSLATION_CACHE_SIZE -                   
-       TRANSLATION_CACHE_LIMIT_THRESHOLD;                                     
-      break;                                                                  
-                                                                              
-    case TRANSLATION_REGION_BIOS:                                             
-      translation_ptr = bios_translation_ptr;                                 
-      translation_cache_limit = bios_translation_cache +                      
-       BIOS_TRANSLATION_CACHE_SIZE;                                           
-      break;                                                                  
-  }                                                                           
-                                                                              
-  generate_block_prologue();                                                  
-                                                                              
-  /* This is a function because it's used a lot more than it might seem (all  
-     of the data processing functions can access it), and its expansion was   
-     massacreing the compiler. */                                             
-                                                                              
-  if(smc_enable)                                                              
-  {                                                                           
-    scan_block(arm, yes);                                                    
-  }                                                                           
-  else                                                                        
-  {                                                                           
-    scan_block(arm, no);                                                     
-  }                                                                           
-                                                                              
-  for(i = 0; i < block_exit_position; i++)                                    
-  {                                                                           
-    branch_target = block_exits[i].branch_target;                             
-                                                                              
-    if((branch_target > block_start_pc) &&                                    
-     (branch_target < block_end_pc))                                          
-    {                                                                         
-      block_data[(branch_target - block_start_pc) /                           
-       arm_instruction_width].update_cycles = 1;                           
-    }                                                                         
-  }                                                                           
-                                                                              
-  arm_dead_flag_eliminate();                                               
-                                                                              
-  block_exit_position = 0;                                                    
-  block_data_position = 0;                                                    
-                                                                              
-  last_condition = 0x0E;                                                      
-                                                                              
-  while(pc != block_end_pc)                                                   
-  {                                                                           
-    block_data[block_data_position].block_offset = translation_ptr;           
+s32 translate_block_arm(u32 pc, translation_region_type
+ translation_region, u32 smc_enable)
+{
+  u32 opcode = 0;
+  u32 last_opcode;
+  u32 condition;
+  u32 last_condition;
+  u32 pc_region = (pc >> 15);
+  u32 new_pc_region;
+  u8 *pc_address_block = memory_map_read[pc_region];
+  u32 block_start_pc = pc;
+  u32 block_end_pc = pc;
+  u32 block_exit_position = 0;
+  s32 block_data_position = 0;
+  u32 external_block_exit_position = 0;
+  u32 branch_target;
+  u32 cycle_count = 0;
+  u8 *translation_target;
+  u8 *backpatch_address = NULL;
+  u8 *translation_ptr = NULL;
+  u8 *translation_cache_limit = NULL;
+  s32 i;
+  u32 flag_status;
+  block_exit_type external_block_exits[MAX_EXITS];
+  generate_block_extra_vars_arm();
+  arm_fix_pc();
+
+  if(!pc_address_block)
+    pc_address_block = load_gamepak_page(pc_region & 0x3FF);
+
+  switch(translation_region)
+  {
+    case TRANSLATION_REGION_RAM:
+      if(pc >= 0x3000000)
+      {
+        if((pc < iwram_code_min) || (iwram_code_min == 0xFFFFFFFF))
+          iwram_code_min = pc;
+      }
+      else
+
+      if(pc >= 0x2000000)
+      {
+        if((pc < ewram_code_min) || (ewram_code_min == 0xFFFFFFFF))
+          ewram_code_min = pc;
+      }
+
+      translation_ptr = ram_translation_ptr;
+      translation_cache_limit =
+       ram_translation_cache + RAM_TRANSLATION_CACHE_SIZE -
+       TRANSLATION_CACHE_LIMIT_THRESHOLD;
+      break;
+
+    case TRANSLATION_REGION_ROM:
+      translation_ptr = rom_translation_ptr;
+      translation_cache_limit =
+       rom_translation_cache + ROM_TRANSLATION_CACHE_SIZE -
+       TRANSLATION_CACHE_LIMIT_THRESHOLD;
+      break;
+  }
+
+  generate_block_prologue();
+
+  /* This is a function because it's used a lot more than it might seem (all
+     of the data processing functions can access it), and its expansion was
+     massacreing the compiler. */
+
+  if(smc_enable)
+  {
+    scan_block(arm, yes);
+  }
+  else
+  {
+    scan_block(arm, no);
+  }
+
+  for(i = 0; i < block_exit_position; i++)
+  {
+    branch_target = block_exits[i].branch_target;
+
+    if((branch_target > block_start_pc) &&
+     (branch_target < block_end_pc))
+    {
+      block_data[(branch_target - block_start_pc) /
+       arm_instruction_width].update_cycles = 1;
+    }
+  }
+
+  arm_dead_flag_eliminate();
+
+  block_exit_position = 0;
+  block_data_position = 0;
+
+  last_condition = 0x0E;
+
+  while(pc != block_end_pc)
+  {
+    block_data[block_data_position].block_offset = translation_ptr;
     arm_base_cycles();
-                                                                              
-    translate_arm_instruction();                                         
-    block_data_position++;                                                    
-                                                                              
-    /* If it went too far the cache needs to be flushed and the process       
-       restarted. Because we might already be nested several stages in        
-       a simple recursive call here won't work, it has to pedal out to        
-       the beginning. */                                                      
-                                                                              
-    if(translation_ptr > translation_cache_limit)                             
-    {                                                                         
-      translation_flush_count++;                                              
-                                                                              
-      switch(translation_region)                                              
-      {                                                                       
-        case TRANSLATION_REGION_RAM:                                          
-          flush_translation_cache_ram();                                      
-          break;                                                              
-                                                                              
-        case TRANSLATION_REGION_ROM:                                          
-          flush_translation_cache_rom();                                      
-          break;                                                              
-                                                                              
-        case TRANSLATION_REGION_BIOS:                                         
-          flush_translation_cache_bios();                                     
-          break;                                                              
-      }                                                                       
-      return -1;                                                              
-    }                                                                         
-                                                                              
-    /* If the next instruction is a block entry point update the              
-       cycle counter and update */                                            
-    if(block_data[block_data_position].update_cycles == 1)                    
-    {                                                                         
-      generate_cycle_update();                                                
-    }                                                                         
-  }                                                                           
-  for(i = 0; i < translation_gate_targets; i++)                               
-  {                                                                           
-    if(pc == translation_gate_target_pc[i])                                   
-    {                                                                         
-      generate_translation_gate(arm);                                        
-      break;                                                                  
-    }                                                                         
-  }                                                                           
-                                                                              
-  for(i = 0; i < block_exit_position; i++)                                    
-  {                                                                           
-    branch_target = block_exits[i].branch_target;                             
-                                                                              
-    if((branch_target >= block_start_pc) && (branch_target < block_end_pc))   
-    {                                                                         
-      /* Internal branch, patch to recorded address */                        
-      translation_target =                                                    
-       block_data[(branch_target - block_start_pc) /                          
-        arm_instruction_width].block_offset;                               
-                                                                              
-      generate_branch_patch_unconditional(block_exits[i].branch_source,       
-       translation_target);                                                   
-    }                                                                         
-    else                                                                      
-    {                                                                         
-      /* External branch, save for later */                                   
-      external_block_exits[external_block_exit_position].branch_target =      
-       branch_target;                                                         
-      external_block_exits[external_block_exit_position].branch_source =      
-       block_exits[i].branch_source;                                          
-      external_block_exit_position++;                                         
-    }                                                                         
-  }                                                                           
-                                                                              
-  switch(translation_region)                                                  
-  {                                                                           
-    case TRANSLATION_REGION_RAM:                                              
-      if(pc >= 0x3000000)                                                     
-      {                                                                       
-        if((pc > iwram_code_max) || (iwram_code_max == 0xFFFFFFFF))           
-          iwram_code_max = pc;                                                
-      }                                                                       
-      else                                                                    
-                                                                              
-      if(pc >= 0x2000000)                                                     
-      {                                                                       
-        if((pc > ewram_code_max) || (ewram_code_max == 0xFFFFFFFF))           
-          ewram_code_max = pc;                                                
-      }                                                                       
-                                                                              
-      ram_translation_ptr = translation_ptr;                                  
-      break;                                                                  
-                                                                              
-    case TRANSLATION_REGION_ROM:                                              
-      rom_translation_ptr = translation_ptr;                                  
-      break;                                                                  
-                                                                              
-    case TRANSLATION_REGION_BIOS:                                             
-      bios_translation_ptr = translation_ptr;                                 
-      break;                                                                  
-  }                                                                           
-                                                                              
-  for(i = 0; i < external_block_exit_position; i++)                           
-  {                                                                           
-    branch_target = external_block_exits[i].branch_target;                    
-    arm_link_block();                                                      
-    if(!translation_target){                                          
+
+    if (pc == cheat_master_hook)
+    {
+      arm_process_cheats();
+    }
+
+    translate_arm_instruction();
+    block_data_position++;
+
+    /* If it went too far the cache needs to be flushed and the process
+       restarted. Because we might already be nested several stages in
+       a simple recursive call here won't work, it has to pedal out to
+       the beginning. */
+
+    if(translation_ptr > translation_cache_limit)
+    {
+      translation_flush_count++;
+
+      switch(translation_region)
+      {
+        case TRANSLATION_REGION_RAM:
+          flush_translation_cache_ram();
+          break;
+
+        case TRANSLATION_REGION_ROM:
+          flush_translation_cache_rom();
+          break;
+      }
+      return -1;
+    }
+
+    /* If the next instruction is a block entry point update the
+       cycle counter and update */
+    if(block_data[block_data_position].update_cycles == 1)
+    {
+      generate_cycle_update();
+    }
+  }
+  for(i = 0; i < translation_gate_targets; i++)
+  {
+    if(pc == translation_gate_target_pc[i])
+    {
+      generate_translation_gate(arm);
+      break;
+    }
+  }
+
+  for(i = 0; i < block_exit_position; i++)
+  {
+    branch_target = block_exits[i].branch_target;
+
+    if((branch_target >= block_start_pc) && (branch_target < block_end_pc))
+    {
+      /* Internal branch, patch to recorded address */
+      translation_target =
+       block_data[(branch_target - block_start_pc) /
+        arm_instruction_width].block_offset;
+
+      generate_branch_patch_unconditional(block_exits[i].branch_source,
+       translation_target);
+    }
+    else
+    {
+      /* External branch, save for later */
+      external_block_exits[external_block_exit_position].branch_target =
+       branch_target;
+      external_block_exits[external_block_exit_position].branch_source =
+       block_exits[i].branch_source;
+      external_block_exit_position++;
+    }
+  }
+
+  switch(translation_region)
+  {
+    case TRANSLATION_REGION_RAM:
+      if(pc >= 0x3000000)
+      {
+        if((pc > iwram_code_max) || (iwram_code_max == 0xFFFFFFFF))
+          iwram_code_max = pc;
+      }
+      else
+
+      if(pc >= 0x2000000)
+      {
+        if((pc > ewram_code_max) || (ewram_code_max == 0xFFFFFFFF))
+          ewram_code_max = pc;
+      }
+
+      ram_translation_ptr = translation_ptr;
+      break;
+
+    case TRANSLATION_REGION_ROM:
+      rom_translation_ptr = translation_ptr;
+      break;
+  }
+
+  for(i = 0; i < external_block_exit_position; i++)
+  {
+    branch_target = external_block_exits[i].branch_target;
+    arm_link_block();
+    if(!translation_target){
 			return -1;
-		}                                                  
-    generate_branch_patch_unconditional(                                      
-     external_block_exits[i].branch_source, translation_target);              
-  }                                                                           
-  return 0;                                                                   
+		}
+    generate_branch_patch_unconditional(
+     external_block_exits[i].branch_source, translation_target);
+  }
+  return 0;
 }
 
-s32 translate_block_thumb(u32 pc, translation_region_type                    
- translation_region, u32 smc_enable)                                          
-{                                                                             
-  u32 opcode = 0;                                                             
-  u32 last_opcode;                                                            
-  u32 condition;                                                              
-  u32 last_condition;                                                         
-  u32 pc_region = (pc >> 15);                                                 
-  u32 new_pc_region;                                                          
-  u8 *pc_address_block = memory_map_read[pc_region];                          
-  u32 block_start_pc = pc;                                                    
-  u32 block_end_pc = pc;                                                      
-  u32 block_exit_position = 0;                                                
-  s32 block_data_position = 0;                                                
-  u32 external_block_exit_position = 0;                                       
-  u32 branch_target;                                                          
-  u32 cycle_count = 0;                                                        
-  u8 *translation_target;                                                     
-  u8 *backpatch_address = NULL;                                               
-  u8 *translation_ptr = NULL;                                                 
-  u8 *translation_cache_limit = NULL;                                         
-  s32 i;                                                                      
-  u32 flag_status;                                                            
-  block_exit_type external_block_exits[MAX_EXITS];         
-  generate_block_extra_vars_thumb();                                         
-  thumb_fix_pc();                                                            
-                                                                              
-  if(!pc_address_block)                                                
-    pc_address_block = load_gamepak_page(pc_region & 0x3FF);                  
-                                                                              
-  switch(translation_region)                                                  
-  {                                                                           
-    case TRANSLATION_REGION_RAM:                                              
-      if(pc >= 0x3000000)                                                     
-      {                                                                       
-        if((pc < iwram_code_min) || (iwram_code_min == 0xFFFFFFFF))           
-          iwram_code_min = pc;                                                
-      }                                                                       
-      else                                                                    
-                                                                              
-      if(pc >= 0x2000000)                                                     
-      {                                                                       
-        if((pc < ewram_code_min) || (ewram_code_min == 0xFFFFFFFF))           
-          ewram_code_min = pc;                                                
-      }                                                                       
-                                                                              
-      translation_ptr = ram_translation_ptr;                                  
-      translation_cache_limit =                                               
-       ram_translation_cache + RAM_TRANSLATION_CACHE_SIZE -                   
-       TRANSLATION_CACHE_LIMIT_THRESHOLD;                                     
-      break;                                                                  
-                                                                              
-    case TRANSLATION_REGION_ROM:                                              
-      translation_ptr = rom_translation_ptr;                                  
-      translation_cache_limit =                                               
-       rom_translation_cache + ROM_TRANSLATION_CACHE_SIZE -                   
-       TRANSLATION_CACHE_LIMIT_THRESHOLD;                                     
-      break;                                                                  
-                                                                              
-    case TRANSLATION_REGION_BIOS:                                             
-      translation_ptr = bios_translation_ptr;                                 
-      translation_cache_limit = bios_translation_cache +                      
-       BIOS_TRANSLATION_CACHE_SIZE;                                           
-      break;                                                                  
-  }                                                                           
-                                                                              
-  generate_block_prologue();                                                  
-                                                                              
-  /* This is a function because it's used a lot more than it might seem (all  
-     of the data processing functions can access it), and its expansion was   
-     massacreing the compiler. */                                             
-                                                                              
-  if(smc_enable)                                                              
-  {                                                                           
-    scan_block(thumb, yes);                                                    
-  }                                                                           
-  else                                                                        
-  {                                                                           
-    scan_block(thumb, no);                                                     
-  }                                                                           
-                                                                              
-  for(i = 0; i < block_exit_position; i++)                                    
-  {                                                                           
-    branch_target = block_exits[i].branch_target;                             
-                                                                              
-    if((branch_target > block_start_pc) &&                                    
-     (branch_target < block_end_pc))                                          
-    {                                                                         
-      block_data[(branch_target - block_start_pc) /                           
-       thumb_instruction_width].update_cycles = 1;                           
-    }                                                                         
-  }                                                                           
-                                                                              
-  thumb_dead_flag_eliminate();                                               
-                                                                              
-  block_exit_position = 0;                                                    
-  block_data_position = 0;                                                    
-                                                                              
-  last_condition = 0x0E;                                                      
-                                                                              
-  while(pc != block_end_pc)                                                   
-  {                                                                           
-    block_data[block_data_position].block_offset = translation_ptr;           
+s32 translate_block_thumb(u32 pc, translation_region_type
+ translation_region, u32 smc_enable)
+{
+  u32 opcode = 0;
+  u32 last_opcode;
+  u32 condition;
+  u32 pc_region = (pc >> 15);
+  u32 new_pc_region;
+  u8 *pc_address_block = memory_map_read[pc_region];
+  u32 block_start_pc = pc;
+  u32 block_end_pc = pc;
+  u32 block_exit_position = 0;
+  s32 block_data_position = 0;
+  u32 external_block_exit_position = 0;
+  u32 branch_target;
+  u32 cycle_count = 0;
+  u8 *translation_target;
+  u8 *backpatch_address = NULL;
+  u8 *translation_ptr = NULL;
+  u8 *translation_cache_limit = NULL;
+  s32 i;
+  u32 flag_status;
+  block_exit_type external_block_exits[MAX_EXITS];
+  generate_block_extra_vars_thumb();
+  thumb_fix_pc();
+
+  if(!pc_address_block)
+    pc_address_block = load_gamepak_page(pc_region & 0x3FF);
+
+  switch(translation_region)
+  {
+    case TRANSLATION_REGION_RAM:
+      if(pc >= 0x3000000)
+      {
+        if((pc < iwram_code_min) || (iwram_code_min == 0xFFFFFFFF))
+          iwram_code_min = pc;
+      }
+      else
+
+      if(pc >= 0x2000000)
+      {
+        if((pc < ewram_code_min) || (ewram_code_min == 0xFFFFFFFF))
+          ewram_code_min = pc;
+      }
+
+      translation_ptr = ram_translation_ptr;
+      translation_cache_limit =
+       ram_translation_cache + RAM_TRANSLATION_CACHE_SIZE -
+       TRANSLATION_CACHE_LIMIT_THRESHOLD;
+      break;
+
+    case TRANSLATION_REGION_ROM:
+      translation_ptr = rom_translation_ptr;
+      translation_cache_limit =
+       rom_translation_cache + ROM_TRANSLATION_CACHE_SIZE -
+       TRANSLATION_CACHE_LIMIT_THRESHOLD;
+      break;
+  }
+
+  generate_block_prologue();
+
+  /* This is a function because it's used a lot more than it might seem (all
+     of the data processing functions can access it), and its expansion was
+     massacreing the compiler. */
+
+  if(smc_enable)
+  {
+    scan_block(thumb, yes);
+  }
+  else
+  {
+    scan_block(thumb, no);
+  }
+
+  for(i = 0; i < block_exit_position; i++)
+  {
+    branch_target = block_exits[i].branch_target;
+
+    if((branch_target > block_start_pc) &&
+     (branch_target < block_end_pc))
+    {
+      block_data[(branch_target - block_start_pc) /
+       thumb_instruction_width].update_cycles = 1;
+    }
+  }
+
+  thumb_dead_flag_eliminate();
+
+  block_exit_position = 0;
+  block_data_position = 0;
+
+  while(pc != block_end_pc)
+  {
+    block_data[block_data_position].block_offset = translation_ptr;
     thumb_base_cycles();
-                                                                              
-    translate_thumb_instruction();                                         
-    block_data_position++;                                                    
-                                                                              
-    /* If it went too far the cache needs to be flushed and the process       
-       restarted. Because we might already be nested several stages in        
-       a simple recursive call here won't work, it has to pedal out to        
-       the beginning. */                                                      
-                                                                              
-    if(translation_ptr > translation_cache_limit)                             
-    {                                                                         
-      translation_flush_count++;                                              
-                                                                              
-      switch(translation_region)                                              
-      {                                                                       
-        case TRANSLATION_REGION_RAM:                                          
-          flush_translation_cache_ram();                                      
-          break;                                                              
-                                                                              
-        case TRANSLATION_REGION_ROM:                                          
-          flush_translation_cache_rom();                                      
-          break;                                                              
-                                                                              
-        case TRANSLATION_REGION_BIOS:                                         
-          flush_translation_cache_bios();                                     
-          break;                                                              
-      }                                                                       
-      return -1;                                                              
-    }                                                                         
-                                                                              
-    /* If the next instruction is a block entry point update the              
-       cycle counter and update */                                            
-    if(block_data[block_data_position].update_cycles == 1)                    
-    {                                                                         
-      generate_cycle_update();                                                
-    }                                                                         
-  }                                                                           
-  for(i = 0; i < translation_gate_targets; i++)                               
-  {                                                                           
-    if(pc == translation_gate_target_pc[i])                                   
-    {                                                                         
-      generate_translation_gate(thumb);                                        
-      break;                                                                  
-    }                                                                         
-  }                                                                           
-                                                                              
-  for(i = 0; i < block_exit_position; i++)                                    
-  {                                                                           
-    branch_target = block_exits[i].branch_target;                             
-                                                                              
-    if((branch_target >= block_start_pc) && (branch_target < block_end_pc))   
-    {                                                                         
-      /* Internal branch, patch to recorded address */                        
-      translation_target =                                                    
-       block_data[(branch_target - block_start_pc) /                          
-        thumb_instruction_width].block_offset;                               
-                                                                              
-      generate_branch_patch_unconditional(block_exits[i].branch_source,       
-       translation_target);                                                   
-    }                                                                         
-    else                                                                      
-    {                                                                         
-      /* External branch, save for later */                                   
-      external_block_exits[external_block_exit_position].branch_target =      
-       branch_target;                                                         
-      external_block_exits[external_block_exit_position].branch_source =      
-       block_exits[i].branch_source;                                          
-      external_block_exit_position++;                                         
-    }                                                                         
-  }                                                                           
-                                                                              
-  switch(translation_region)                                                  
-  {                                                                           
-    case TRANSLATION_REGION_RAM:                                              
-      if(pc >= 0x3000000)                                                     
-      {                                                                       
-        if((pc > iwram_code_max) || (iwram_code_max == 0xFFFFFFFF))           
-          iwram_code_max = pc;                                                
-      }                                                                       
-      else                                                                    
-                                                                              
-      if(pc >= 0x2000000)                                                     
-      {                                                                       
-        if((pc > ewram_code_max) || (ewram_code_max == 0xFFFFFFFF))           
-          ewram_code_max = pc;                                                
-      }                                                                       
-                                                                              
-      ram_translation_ptr = translation_ptr;                                  
-      break;                                                                  
-                                                                              
-    case TRANSLATION_REGION_ROM:                                              
-      rom_translation_ptr = translation_ptr;                                  
-      break;                                                                  
-                                                                              
-    case TRANSLATION_REGION_BIOS:                                             
-      bios_translation_ptr = translation_ptr;                                 
-      break;                                                                  
-  }                                                                           
-                                                                              
-  for(i = 0; i < external_block_exit_position; i++)                           
-  {                                                                           
-    branch_target = external_block_exits[i].branch_target;                    
-    thumb_link_block();                                                      
-    if(!translation_target){         
-      return -1;           
-		}                                                   
-    generate_branch_patch_unconditional(                                      
-     external_block_exits[i].branch_source, translation_target);              
-  }                                                                           
+
+    if (pc == cheat_master_hook)
+    {
+      thumb_process_cheats();
+    }
+
+    translate_thumb_instruction();
+    block_data_position++;
+
+    /* If it went too far the cache needs to be flushed and the process
+       restarted. Because we might already be nested several stages in
+       a simple recursive call here won't work, it has to pedal out to
+       the beginning. */
+
+    if(translation_ptr > translation_cache_limit)
+    {
+      translation_flush_count++;
+
+      switch(translation_region)
+      {
+        case TRANSLATION_REGION_RAM:
+          flush_translation_cache_ram();
+          break;
+
+        case TRANSLATION_REGION_ROM:
+          flush_translation_cache_rom();
+          break;
+      }
+      return -1;
+    }
+
+    /* If the next instruction is a block entry point update the
+       cycle counter and update */
+    if(block_data[block_data_position].update_cycles == 1)
+    {
+      generate_cycle_update();
+    }
+  }
+  for(i = 0; i < translation_gate_targets; i++)
+  {
+    if(pc == translation_gate_target_pc[i])
+    {
+      generate_translation_gate(thumb);
+      break;
+    }
+  }
+
+  for(i = 0; i < block_exit_position; i++)
+  {
+    branch_target = block_exits[i].branch_target;
+
+    if((branch_target >= block_start_pc) && (branch_target < block_end_pc))
+    {
+      /* Internal branch, patch to recorded address */
+      translation_target =
+       block_data[(branch_target - block_start_pc) /
+        thumb_instruction_width].block_offset;
+
+      generate_branch_patch_unconditional(block_exits[i].branch_source,
+       translation_target);
+    }
+    else
+    {
+      /* External branch, save for later */
+      external_block_exits[external_block_exit_position].branch_target =
+       branch_target;
+      external_block_exits[external_block_exit_position].branch_source =
+       block_exits[i].branch_source;
+      external_block_exit_position++;
+    }
+  }
+
+  switch(translation_region)
+  {
+    case TRANSLATION_REGION_RAM:
+      if(pc >= 0x3000000)
+      {
+        if((pc > iwram_code_max) || (iwram_code_max == 0xFFFFFFFF))
+          iwram_code_max = pc;
+      }
+      else
+
+      if(pc >= 0x2000000)
+      {
+        if((pc > ewram_code_max) || (ewram_code_max == 0xFFFFFFFF))
+          ewram_code_max = pc;
+      }
+
+      ram_translation_ptr = translation_ptr;
+      break;
+
+    case TRANSLATION_REGION_ROM:
+      rom_translation_ptr = translation_ptr;
+      break;
+  }
+
+  for(i = 0; i < external_block_exit_position; i++)
+  {
+    branch_target = external_block_exits[i].branch_target;
+    thumb_link_block();
+    if(!translation_target){
+      return -1;
+		}
+    generate_branch_patch_unconditional(
+     external_block_exits[i].branch_source, translation_target);
+  }
   return 0;
 }
 
 void flush_translation_cache_ram(void)
 {
   flush_ram_count++;
-/*  printf("ram flush %d (pc %x), %x to %x, %x to %x\n",
+  /*printf("ram flush %d (pc %x), %x to %x, %x to %x\n",
    flush_ram_count, reg[REG_PC], iwram_code_min, iwram_code_max,
-   ewram_code_min, ewram_code_max); */
+   ewram_code_min, ewram_code_max);*/
 
-  invalidate_icache_region(ram_translation_cache, (ram_translation_ptr - ram_translation_cache) + 0x100);
   last_ram_translation_ptr = ram_translation_cache;
   ram_translation_ptr = ram_translation_cache;
   ram_block_tag_top = 0x0101;
+
+  // Proceed to clean the SMC area if needed
+  // (also try to memset as little as possible for performance)
   if(iwram_code_min != 0xFFFFFFFF)
   {
     iwram_code_min &= 0x7FFF;
@@ -3742,33 +3399,9 @@ void flush_translation_cache_ram(void)
 
   if(ewram_code_min != 0xFFFFFFFF)
   {
-    u32 ewram_code_min_page;
-    u32 ewram_code_max_page;
-    u32 ewram_code_min_offset;
-    u32 ewram_code_max_offset;
-    u32 i;
-
     ewram_code_min &= 0x3FFFF;
     ewram_code_max &= 0x3FFFF;
-
-    ewram_code_min_page = ewram_code_min >> 15;
-    ewram_code_max_page = ewram_code_max >> 15;
-    ewram_code_min_offset = ewram_code_min & 0x7FFF;
-    ewram_code_max_offset = ewram_code_max & 0x7FFF;
-
-    if(ewram_code_min_page == ewram_code_max_page)
-    {
-      memset(ewram + (ewram_code_min_page * 0x10000) +
-       ewram_code_min_offset, 0,
-       ewram_code_max_offset - ewram_code_min_offset);
-    }
-    else
-    {
-      for(i = ewram_code_min_page + 1; i < ewram_code_max_page; i++)
-        memset(ewram + (i * 0x10000), 0, 0x8000);
-
-      memset(ewram, 0, ewram_code_max_offset);
-    }
+    memset(&ewram[0x40000 + ewram_code_min], 0, ewram_code_max - ewram_code_min);
   }
 
   iwram_code_min = 0xFFFFFFFF;
@@ -3779,42 +3412,38 @@ void flush_translation_cache_ram(void)
 
 void flush_translation_cache_rom(void)
 {
-  invalidate_icache_region(rom_translation_cache, rom_translation_ptr - rom_translation_cache + 0x100);
-
   last_rom_translation_ptr = rom_translation_cache;
   rom_translation_ptr      = rom_translation_cache;
 
   memset(rom_branch_hash, 0, sizeof(rom_branch_hash));
 }
 
-void flush_translation_cache_bios(void)
+void init_caches(void)
 {
-  invalidate_icache_region(bios_translation_cache, bios_translation_ptr - bios_translation_cache + 0x100);
-
-  bios_block_tag_top = 0x0101;
-
-  last_bios_translation_ptr = bios_translation_cache;
-  bios_translation_ptr = bios_translation_cache;
-
-  memset(bios_rom + 0x4000, 0, 0x4000);
+  /* Ensure we wipe everything including the SMC mirrors */
+  flush_translation_cache_rom();
+  ewram_code_min = 0;
+  ewram_code_max = 0x3FFFF;
+  iwram_code_min = 0;
+  iwram_code_max = 0x7FFF;
+  flush_translation_cache_ram();
+  /* Ensure 0 and FFFF get zeroed out */
+  memset(ram_block_ptrs, 0, sizeof(ram_block_ptrs));
 }
 
 #define cache_dump_prefix ""
 
 void dump_translation_cache(void)
 {
-  file_open(ram_cache, cache_dump_prefix "ram_cache.bin", write);
-  file_write(ram_cache, ram_translation_cache,
-   ram_translation_ptr - ram_translation_cache);
-  file_close(ram_cache);
+  FILE *fd = fopen(cache_dump_prefix "ram_cache.bin", "wb");
+  fwrite(ram_translation_cache, 1,
+   ram_translation_ptr - ram_translation_cache, fd);
+  fclose(fd);
 
-  file_open(rom_cache, cache_dump_prefix "rom_cache.bin", write);
-  file_write(rom_cache, rom_translation_cache,
-   rom_translation_ptr - rom_translation_cache);
-  file_close(rom_cache);
-
-  file_open(bios_cache, cache_dump_prefix "bios_cache.bin", write);
-  file_write(bios_cache, bios_translation_cache,
-   bios_translation_ptr - bios_translation_cache);
-  file_close(bios_cache);
+  fd = fopen(cache_dump_prefix "rom_cache.bin", "wb");
+  fwrite(rom_translation_cache, 1,
+   rom_translation_ptr - rom_translation_cache, fd);
+  fclose(fd);
 }
+
+

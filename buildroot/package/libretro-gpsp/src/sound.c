@@ -273,8 +273,11 @@ u32 gbc_sound_master_volume;
       else                                                                    \
         rate = rate + (rate >> gs->sweep_shift);                              \
                                                                               \
-      if(rate > 2048)                                                         \
-        rate = 2048;                                                          \
+      if(rate > 2047) {                                                       \
+        rate = 2047;                                                          \
+        gs->active_flag = 0;                                                  \
+        break;                                                                \
+      }                                                                       \
                                                                               \
       frequency_step = float_to_fp16_16(((131072.0f / (2048 - rate)) * 8.0f)  \
        / sound_frequency);                                                    \

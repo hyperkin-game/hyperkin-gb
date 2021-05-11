@@ -28,7 +28,7 @@ void x86_indirect_branch_arm(u32 address);
 void x86_indirect_branch_thumb(u32 address);
 void x86_indirect_branch_dual(u32 address);
 
-void execute_store_cpsr(u32 new_cpsr, u32 store_mask);
+void function_cc execute_store_cpsr(u32 new_cpsr, u32 store_mask);
 
 typedef enum
 {
@@ -96,6 +96,7 @@ typedef enum
   x86_opcode_push_reg                   = 0x50,
   x86_opcode_push_rm                    = 0xFF,
   x86_opcode_push_imm                   = 0x0668,
+  x86_opcode_pop_reg                    = 0x58,
   x86_opcode_call_offset                = 0xE8,
   x86_opcode_ret                        = 0xC3,
   x86_opcode_test_rm_imm                = 0x00F7,
@@ -266,6 +267,12 @@ typedef enum
 #define x86_emit_idiv_eax_reg(source)                                         \
   x86_emit_opcode_1b_ext_reg(idiv_eax_rm, source)                             \
 
+#define x86_emit_pop_reg(regn)                                                \
+  x86_emit_opcode_1b(pop_reg, regn)                                           \
+
+#define x86_emit_push_reg(regn)                                               \
+  x86_emit_opcode_1b(push_reg, regn)                                          \
+
 #define x86_emit_push_mem(base, offset)                                       \
   x86_emit_opcode_1b_mem(push_rm, 0x06, base, offset)                         \
 
@@ -318,7 +325,7 @@ typedef enum
   x86_emit_mov_reg_mem(reg_##ireg, reg_base, reg_index * 4);                  \
 
 #define generate_load_pc(ireg, new_pc)                                        \
-  x86_emit_mov_reg_imm(reg_##ireg, new_pc)                                    \
+  x86_emit_mov_reg_imm(reg_##ireg, (new_pc))                                  \
 
 #define generate_load_imm(ireg, imm)                                          \
   x86_emit_mov_reg_imm(reg_##ireg, imm)                                       \
@@ -523,7 +530,29 @@ typedef enum
   generate_function_call(execute_##name##_##flags_op##_reg);                  \
   generate_mov(ireg, rv)                                                      \
 
-u32 execute_lsl_no_flags_reg(u32 value, u32 shift)
+#ifdef TRACE_INSTRUCTIONS
+  void function_cc trace_instruction(u32 pc)
+  {
+    printf("Executed %x\n", pc);
+  }
+
+  #define emit_trace_thumb_instruction(pc)         \
+    x86_emit_push_reg(eax);                        \
+    x86_emit_push_reg(ecx);                        \
+    x86_emit_push_reg(edx);                        \
+    x86_emit_mov_reg_imm(eax, pc);                 \
+    generate_function_call(trace_instruction);     \
+    x86_emit_pop_reg(edx);                         \
+    x86_emit_pop_reg(ecx);                         \
+    x86_emit_pop_reg(eax);
+  #define emit_trace_arm_instruction(pc)           \
+    emit_trace_thumb_instruction(pc)
+#else
+  #define emit_trace_thumb_instruction(pc)
+  #define emit_trace_arm_instruction(pc)
+#endif
+
+u32 function_cc execute_lsl_no_flags_reg(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -535,7 +564,7 @@ u32 execute_lsl_no_flags_reg(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_lsr_no_flags_reg(u32 value, u32 shift)
+u32 function_cc execute_lsr_no_flags_reg(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -547,7 +576,7 @@ u32 execute_lsr_no_flags_reg(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_asr_no_flags_reg(u32 value, u32 shift)
+u32 function_cc execute_asr_no_flags_reg(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -559,7 +588,7 @@ u32 execute_asr_no_flags_reg(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_ror_no_flags_reg(u32 value, u32 shift)
+u32 function_cc execute_ror_no_flags_reg(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -570,7 +599,7 @@ u32 execute_ror_no_flags_reg(u32 value, u32 shift)
 }
 
 
-u32 execute_lsl_flags_reg(u32 value, u32 shift)
+u32 function_cc execute_lsl_flags_reg(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -592,7 +621,7 @@ u32 execute_lsl_flags_reg(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_lsr_flags_reg(u32 value, u32 shift)
+u32 function_cc execute_lsr_flags_reg(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -614,7 +643,7 @@ u32 execute_lsr_flags_reg(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_asr_flags_reg(u32 value, u32 shift)
+u32 function_cc execute_asr_flags_reg(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -632,7 +661,7 @@ u32 execute_asr_flags_reg(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_ror_flags_reg(u32 value, u32 shift)
+u32 function_cc execute_ror_flags_reg(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -643,14 +672,14 @@ u32 execute_ror_flags_reg(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_rrx_flags(u32 value)
+u32 function_cc execute_rrx_flags(u32 value)
 {
   u32 c_flag = reg[REG_C_FLAG];
   reg[REG_C_FLAG] = value & 0x01;
   return (value >> 1) | (c_flag << 31);
 }
 
-u32 execute_rrx(u32 value)
+u32 function_cc execute_rrx(u32 value)
 {
   return (value >> 1) | (reg[REG_C_FLAG] << 31);
 }
@@ -917,7 +946,7 @@ u32 execute_rrx(u32 value)
     generate_indirect_branch_arm();                                           \
   }                                                                           \
 
-u32 execute_spsr_restore(u32 address)
+u32 function_cc execute_spsr_restore(u32 address)
 {
   if(reg[CPU_MODE] != MODE_USER)
   {
@@ -1195,7 +1224,7 @@ typedef enum
   generate_store_reg_pc_no_flags(a0, rd);                                     \
 }                                                                             \
 
-static void execute_mul_flags(u32 dest)
+static void function_cc execute_mul_flags(u32 dest)
 {
   calculate_z_flag(dest);
   calculate_n_flag(dest);
@@ -1223,7 +1252,7 @@ static void execute_mul_flags(u32 dest)
   arm_multiply_flags_##flags();                                               \
 }                                                                             \
 
-static void execute_mul_long_flags(u32 dest_lo, u32 dest_hi)
+static void function_cc execute_mul_long_flags(u32 dest_lo, u32 dest_hi)
 {
   reg[REG_Z_FLAG] = (dest_lo == 0) & (dest_hi == 0);
   calculate_n_flag(dest_hi);
@@ -1253,13 +1282,13 @@ static void execute_mul_long_flags(u32 dest_lo, u32 dest_hi)
   arm_multiply_long_flags_##flags();                                          \
 }                                                                             \
 
-u32 execute_read_cpsr(void)
+u32 function_cc execute_read_cpsr(void)
 {
   collapse_flags();
   return reg[REG_CPSR];
 }
 
-u32 execute_read_spsr(void)
+u32 function_cc execute_read_spsr(void)
 {
   collapse_flags();
   return spsr[reg[CPU_MODE]];
@@ -1272,7 +1301,7 @@ u32 execute_read_spsr(void)
 // store_mask and address are stored in the SAVE slots, since there's no real
 // register space to nicely pass them.
 
-u32 execute_store_cpsr_body(u32 _cpsr)
+u32 function_cc execute_store_cpsr_body(u32 _cpsr)
 {
   reg[REG_CPSR] = _cpsr;
   if(reg[REG_SAVE] & 0xFF)
@@ -1293,7 +1322,7 @@ u32 execute_store_cpsr_body(u32 _cpsr)
 }
 
 
-void execute_store_spsr(u32 new_spsr, u32 store_mask)
+void function_cc execute_store_spsr(u32 new_spsr, u32 store_mask)
 {
   u32 _spsr = spsr[reg[CPU_MODE]];
   spsr[reg[CPU_MODE]] = (new_spsr & store_mask) | (_spsr & (~store_mask));
@@ -1365,7 +1394,7 @@ void execute_store_spsr(u32 new_spsr, u32 store_mask)
 }                                                                             \
 
 #define access_memory_generate_read_function(mem_size, mem_type)              \
-u32 execute_load_##mem_type(u32 address)                          \
+u32 function_cc execute_load_##mem_type(u32 address)                          \
 {                                                                             \
   u32 dest;                                                                   \
   read_memory(mem_size, mem_type, address, dest);                             \
@@ -1377,28 +1406,12 @@ access_memory_generate_read_function(8, s8);
 access_memory_generate_read_function(16, u16);
 access_memory_generate_read_function(32, u32);
 
-u32 execute_load_s16(u32 address)
+u32 function_cc execute_load_s16(u32 address)
 {
   u32 dest;
   read_memory_s16(address, dest);
   return dest;
 }
-
-#define access_memory_generate_write_function(mem_size, mem_type)             \
-void execute_store_##mem_type(u32 address, u32 source)            \
-{                                                                             \
-  u8 *map;                                                                    \
-                                                                              \
-  if(((address & aligned_address_mask##mem_size) == 0) &&                     \
-   (map = memory_map_write[address >> 15]))                                   \
-  {                                                                           \
-    *((mem_type *)((u8 *)map + (address & 0x7FFF))) = source;                 \
-  }                                                                           \
-  else                                                                        \
-  {                                                                           \
-    write_memory##mem_size(address, source);                                  \
-  }                                                                           \
-}                                                                             \
 
 #define arm_access_memory_load(mem_type)                                      \
   cycle_count += 2;                                                           \
@@ -1492,7 +1505,7 @@ void execute_store_##mem_type(u32 address, u32 source)            \
 #define sprint_yes(access_type, pre_op, post_op, wb)                          \
   printf("sbit on %s %s %s %s\n", #access_type, #pre_op, #post_op, #wb)       \
 
-u32 execute_aligned_load32(u32 address)
+u32 function_cc execute_aligned_load32(u32 address)
 {
   u8 *map;
   if(!(address & 0xF0000000) && (map = memory_map_read[address >> 15]))
@@ -1501,23 +1514,13 @@ u32 execute_aligned_load32(u32 address)
     return read_memory32(address);
 }
 
-void execute_aligned_store32(u32 address, u32 source)
-{
-  u8 *map;
-
-  if(!(address & 0xF0000000) && (map = memory_map_write[address >> 15]))
-    address32(map, address & 0x7FFF) = source;
-  else
-    write_memory32(address, source);
-}
-
 #define arm_block_memory_load()                                               \
   generate_function_call(execute_aligned_load32);                             \
   generate_store_reg(rv, i)                                                   \
 
 #define arm_block_memory_store()                                              \
   generate_load_reg_pc(a1, i, 8);                                             \
-  generate_function_call(execute_aligned_store32)                             \
+  generate_function_call(write_memory32)                                      \
 
 #define arm_block_memory_final_load()                                         \
   arm_block_memory_load()                                                     \
@@ -1729,7 +1732,7 @@ void execute_aligned_store32(u32 address, u32 source)
 // Operation types: lsl, lsr, asr, ror
 // Affects N/Z/C flags
 
-u32 execute_lsl_reg_op(u32 value, u32 shift)
+u32 function_cc execute_lsl_reg_op(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -1753,7 +1756,7 @@ u32 execute_lsl_reg_op(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_lsr_reg_op(u32 value, u32 shift)
+u32 function_cc execute_lsr_reg_op(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -1777,7 +1780,7 @@ u32 execute_lsr_reg_op(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_asr_reg_op(u32 value, u32 shift)
+u32 function_cc execute_asr_reg_op(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -1797,7 +1800,7 @@ u32 execute_asr_reg_op(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_ror_reg_op(u32 value, u32 shift)
+u32 function_cc execute_ror_reg_op(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -1809,7 +1812,7 @@ u32 execute_ror_reg_op(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_lsl_imm_op(u32 value, u32 shift)
+u32 function_cc execute_lsl_imm_op(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -1821,7 +1824,7 @@ u32 execute_lsl_imm_op(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_lsr_imm_op(u32 value, u32 shift)
+u32 function_cc execute_lsr_imm_op(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -1838,7 +1841,7 @@ u32 execute_lsr_imm_op(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_asr_imm_op(u32 value, u32 shift)
+u32 function_cc execute_asr_imm_op(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -1855,7 +1858,7 @@ u32 execute_asr_imm_op(u32 value, u32 shift)
   return value;
 }
 
-u32 execute_ror_imm_op(u32 value, u32 shift)
+u32 function_cc execute_ror_imm_op(u32 value, u32 shift)
 {
   if(shift != 0)
   {
@@ -1890,6 +1893,10 @@ u32 execute_ror_imm_op(u32 value, u32 shift)
 }                                                                             \
 
 // Operation types: imm, mem_reg, mem_imm
+
+#define thumb_load_pc_pool_const(reg_rd, value)                               \
+  generate_load_pc(a0, (value));                                              \
+  generate_store_reg(a0, reg_rd)
 
 #define thumb_access_memory_load(mem_type, reg_rd)                            \
   cycle_count += 2;                                                           \
@@ -1972,7 +1979,7 @@ u32 execute_ror_imm_op(u32 value, u32 shift)
 #define thumb_block_memory_extra_push_lr(base_reg)                            \
   generate_add_reg_reg_imm(a0, s0, (bit_count[reg_list] * 4));                \
   generate_load_reg(a1, REG_LR);                                              \
-  generate_function_call(execute_aligned_store32)                             \
+  generate_function_call(write_memory32)                                      \
 
 #define thumb_block_memory_load()                                             \
   generate_function_call(execute_aligned_load32);                             \
@@ -1980,7 +1987,7 @@ u32 execute_ror_imm_op(u32 value, u32 shift)
 
 #define thumb_block_memory_store()                                            \
   generate_load_reg(a1, i);                                                   \
-  generate_function_call(execute_aligned_store32)                             \
+  generate_function_call(write_memory32)                                      \
 
 #define thumb_block_memory_final_load()                                       \
   thumb_block_memory_load()                                                   \
@@ -2057,12 +2064,12 @@ u32 execute_ror_imm_op(u32 value, u32 shift)
   const u32 _sb = src_b                                                       \
 
 #define data_proc_generate_logic_function(name, expr)                         \
-u32 execute_##name(u32 rm, u32 rn)                                \
+u32 function_cc execute_##name(u32 rm, u32 rn)                                \
 {                                                                             \
   return expr;                                                                \
 }                                                                             \
                                                                               \
-u32 execute_##name##s(u32 rm, u32 rn)                             \
+u32 function_cc execute_##name##s(u32 rm, u32 rn)                             \
 {                                                                             \
   u32 dest = expr;                                                            \
   calculate_z_flag(dest);                                                     \
@@ -2071,12 +2078,12 @@ u32 execute_##name##s(u32 rm, u32 rn)                             \
 }                                                                             \
 
 #define data_proc_generate_logic_unary_function(name, expr)                   \
-u32 execute_##name(u32 rm)                                        \
+u32 function_cc execute_##name(u32 rm)                                        \
 {                                                                             \
   return expr;                                                                \
 }                                                                             \
                                                                               \
-u32 execute_##name##s(u32 rm)                                     \
+u32 function_cc execute_##name##s(u32 rm)                                     \
 {                                                                             \
   u32 dest = expr;                                                            \
   calculate_z_flag(dest);                                                     \
@@ -2086,12 +2093,12 @@ u32 execute_##name##s(u32 rm)                                     \
 
 
 #define data_proc_generate_sub_function(name, src_a, src_b)                   \
-u32 execute_##name(u32 rm, u32 rn)                                \
+u32 function_cc execute_##name(u32 rm, u32 rn)                                \
 {                                                                             \
   return (src_a) - (src_b);                                                   \
 }                                                                             \
                                                                               \
-u32 execute_##name##s(u32 rm, u32 rn)                             \
+u32 function_cc execute_##name##s(u32 rm, u32 rn)                             \
 {                                                                             \
   flags_vars(src_a, src_b);                                                   \
   dest = _sa - _sb;                                                           \
@@ -2100,12 +2107,12 @@ u32 execute_##name##s(u32 rm, u32 rn)                             \
 }                                                                             \
 
 #define data_proc_generate_add_function(name, src_a, src_b)                   \
-u32 execute_##name(u32 rm, u32 rn)                                \
+u32 function_cc execute_##name(u32 rm, u32 rn)                                \
 {                                                                             \
   return (src_a) + (src_b);                                                   \
 }                                                                             \
                                                                               \
-u32 execute_##name##s(u32 rm, u32 rn)                             \
+u32 function_cc execute_##name##s(u32 rm, u32 rn)                             \
 {                                                                             \
   flags_vars(src_a, src_b);                                                   \
   dest = _sa + _sb;                                                           \
@@ -2114,7 +2121,7 @@ u32 execute_##name##s(u32 rm, u32 rn)                             \
 }                                                                             \
 
 #define data_proc_generate_sub_test_function(name, src_a, src_b)              \
-void execute_##name(u32 rm, u32 rn)                               \
+void function_cc execute_##name(u32 rm, u32 rn)                               \
 {                                                                             \
   flags_vars(src_a, src_b);                                                   \
   dest = _sa - _sb;                                                           \
@@ -2122,7 +2129,7 @@ void execute_##name(u32 rm, u32 rn)                               \
 }                                                                             \
 
 #define data_proc_generate_add_test_function(name, src_a, src_b)              \
-void execute_##name(u32 rm, u32 rn)                               \
+void function_cc execute_##name(u32 rm, u32 rn)                               \
 {                                                                             \
   flags_vars(src_a, src_b);                                                   \
   dest = _sa + _sb;                                                           \
@@ -2130,14 +2137,14 @@ void execute_##name(u32 rm, u32 rn)                               \
 }                                                                             \
 
 #define data_proc_generate_logic_test_function(name, expr)                    \
-void execute_##name(u32 rm, u32 rn)                               \
+void function_cc execute_##name(u32 rm, u32 rn)                               \
 {                                                                             \
   u32 dest = expr;                                                            \
   calculate_z_flag(dest);                                                     \
   calculate_n_flag(dest);                                                     \
 }                                                                             \
 
-u32 execute_neg(u32 rm)                                           \
+u32 function_cc execute_neg(u32 rm)                                           \
 {                                                                             \
   u32 dest = 0 - rm;                                                          \
   calculate_flags_sub(dest, 0, rm);                                           \
@@ -2166,7 +2173,7 @@ data_proc_generate_logic_test_function(teq, rn ^ rm);
 data_proc_generate_sub_test_function(cmp, rn, rm);
 data_proc_generate_add_test_function(cmn, rn, rm);
 
-static void execute_swi(u32 pc)
+static void function_cc execute_swi(u32 pc)
 {
   reg_mode[MODE_SUPERVISOR][6] = pc;
   collapse_flags();
@@ -2233,6 +2240,12 @@ static void execute_swi(u32 pc)
   generate_indirect_branch_cycle_update(dual);                                \
 }                                                                             \
 
+#define thumb_process_cheats()                                                \
+  generate_function_call(process_cheats);
+
+#define arm_process_cheats()                                                  \
+  generate_function_call(process_cheats);
+
 #define thumb_swi()                                                           \
   generate_swi_hle_handler(opcode & 0xFF);                                    \
   generate_update_pc((pc + 2));                                               \
@@ -2289,7 +2302,7 @@ u8 swi_hle_handle[256] =
   0x0     // SWI 2A: SoundGetJumpList
 };
 
-void swi_hle_div(void)
+void function_cc swi_hle_div(void)
 {
   s32 result = (s32)reg[0] / (s32)reg[1];
   reg[1] = (s32)reg[0] % (s32)reg[1];
@@ -2314,5 +2327,7 @@ void swi_hle_div(void)
 #define generate_translation_gate(type)                                       \
   generate_update_pc(pc);                                                     \
   generate_indirect_branch_no_cycle_update(type)                              \
+
+void init_emitter(void) {}
 
 #endif

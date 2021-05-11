@@ -21,6 +21,7 @@
 #define MEMORY_H
 
 #include "libretro.h"
+extern int use_libretro_save_method;
 
 typedef enum
 {
@@ -155,13 +156,20 @@ typedef enum
   FLASH_MANUFACTURER_SST       = 0xBF
 } flash_manufacturer_id_type;
 
-u8 read_memory8(u32 address);
-u32 read_memory16(u32 address);
-u16 read_memory16_signed(u32 address);
-u32 read_memory32(u32 address);
-cpu_alert_type write_memory8(u32 address, u8 value);
-cpu_alert_type write_memory16(u32 address, u16 value);
-cpu_alert_type write_memory32(u32 address, u32 value);
+u8 function_cc read_memory8(u32 address);
+u32 read_memory8s(u32 address);
+u32 function_cc read_memory16(u32 address);
+u16 function_cc read_memory16_signed(u32 address);
+u32 read_memory16s(u32 address);
+u32 function_cc read_memory32(u32 address);
+cpu_alert_type function_cc write_memory8(u32 address, u8 value);
+cpu_alert_type function_cc write_memory16(u32 address, u16 value);
+cpu_alert_type function_cc write_memory32(u32 address, u32 value);
+u32 function_cc read_eeprom(void);
+void function_cc write_eeprom(u32 address, u32 value);
+u8 read_backup(u32 address);
+void function_cc write_backup(u32 address, u32 value);
+void function_cc write_rtc(u32 address, u32 value);
 
 extern u8 *memory_regions[16];
 extern u32 memory_limits[16];
@@ -184,8 +192,6 @@ void update_backup(void);
 void init_memory(void);
 void init_gamepak_buffer(void);
 void memory_term(void);
-void bios_region_read_allow(void);
-void bios_region_read_protect(void);
 u8 *load_gamepak_page(u32 physical_index);
 
 extern u8 *gamepak_rom;
@@ -195,25 +201,82 @@ extern u32 gbc_sound_update;
 extern u32 gbc_sound_wave_update;
 extern dma_transfer_type dma[4];
 
+extern u8 open_gba_bios_rom[1024*16];
+extern u32 bios_read_protect;
 extern u16 palette_ram[512];
 extern u16 oam_ram[512];
 extern u16 palette_ram_converted[512];
 extern u16 io_registers[1024 * 16];
+extern u8 vram[1024 * 96];
+extern u8 bios_rom[1024 * 16];
+// Double buffer used for SMC detection
 extern u8 ewram[1024 * 256 * 2];
 extern u8 iwram[1024 * 32 * 2];
-extern u8 vram[1024 * 96 * 2];
-
-extern u8 bios_rom[1024 * 32];
-extern u32 bios_read_protect;
 
 extern u8 *memory_map_read[8 * 1024];
-extern u32 *reg;
-extern u8 *memory_map_write[8 * 1024];
+
+extern u32 reg[64];
 
 extern flash_device_id_type flash_device_id;
 
 extern const u8 *state_mem_read_ptr;
 extern u8 *state_mem_write_ptr;
+
+typedef enum
+{
+  BACKUP_SRAM,
+  BACKUP_FLASH,
+  BACKUP_EEPROM,
+  BACKUP_NONE
+} backup_type_type;
+
+typedef enum
+{
+  SRAM_SIZE_32KB,
+  SRAM_SIZE_64KB
+} sram_size_type;
+
+typedef enum
+{
+  FLASH_BASE_MODE,
+  FLASH_ERASE_MODE,
+  FLASH_ID_MODE,
+  FLASH_WRITE_MODE,
+  FLASH_BANKSWITCH_MODE
+} flash_mode_type;
+
+typedef enum
+{
+  FLASH_SIZE_64KB,
+  FLASH_SIZE_128KB
+} flash_size_type;
+
+
+extern backup_type_type backup_type;
+extern sram_size_type sram_size;
+extern flash_size_type flash_size;
+
+typedef enum
+{
+  EEPROM_512_BYTE,
+  EEPROM_8_KBYTE
+} eeprom_size_type;
+
+typedef enum
+{
+  EEPROM_BASE_MODE,
+  EEPROM_READ_MODE,
+  EEPROM_READ_HEADER_MODE,
+  EEPROM_ADDRESS_MODE,
+  EEPROM_WRITE_MODE,
+  EEPROM_WRITE_ADDRESS_MODE,
+  EEPROM_ADDRESS_FOOTER_MODE,
+  EEPROM_WRITE_FOOTER_MODE
+} eeprom_mode_type;
+
+extern eeprom_size_type eeprom_size;
+
+extern u8 gamepak_backup[1024 * 128];
 
 static inline void state_mem_write(const void* src, size_t size)
 {

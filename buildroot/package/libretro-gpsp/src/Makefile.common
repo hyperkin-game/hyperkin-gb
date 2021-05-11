@@ -1,6 +1,6 @@
 INCFLAGS   := -I$(CORE_DIR)/libretro -I$(CORE_DIR)/src
 
-SOURCES_ASM :=
+SOURCES_ASM := $(CORE_DIR)/bios_data.S
 
 ifeq ($(HAVE_GRIFFIN), 1)
 SOURCES_C := $(CORE_DIR)/gpsp_griffin.c
@@ -13,8 +13,7 @@ SOURCES_C := $(CORE_DIR)/main.c \
 				 $(CORE_DIR)/sound.c \
 				 $(CORE_DIR)/cheats.c \
 				 $(CORE_DIR)/libretro.c \
-				 $(CORE_DIR)/libco/libco.c
-
+				 $(CORE_DIR)/gba_cc_lut.c
 
 ifeq ($(HAVE_DYNAREC), 1)
 SOURCES_C += $(CORE_DIR)/cpu_threaded.c
@@ -28,6 +27,9 @@ SOURCES_ASM += $(CORE_DIR)/x86/x86_stub.S
 endif
 ifeq ($(CPU_ARCH), arm)
 SOURCES_ASM += $(CORE_DIR)/arm/arm_stub.S
+endif
+ifeq ($(CPU_ARCH), mips)
+SOURCES_ASM += $(CORE_DIR)/psp/mips_stub.S
 endif
 endif
 

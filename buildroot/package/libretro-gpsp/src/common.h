@@ -31,11 +31,17 @@
   #define PATH_SEPARATOR_CHAR '/'
 #endif
 
+/* On x86 we pass arguments via registers instead of stack */
+#ifdef X86_ARCH
+  #define function_cc __attribute__((regparm(2)))
+#else
+  #define function_cc
+#endif
+
 #ifdef ARM_ARCH
 
 #define _BSD_SOURCE // sync
 #include <stdlib.h>
-#include <stdio.h>
 #include <string.h>
 #include <math.h>
 #include <fcntl.h>
@@ -49,9 +55,7 @@
 // Huge thanks to pollux for the heads up on using native file I/O
 // functions on PSP for vastly improved memstick performance.
 
-#ifdef PSP_BUILD
-  #define fastcall
-
+#ifdef PSP
   #include <pspkernel.h>
   #include <pspdebug.h>
   #include <pspctrl.h>
@@ -59,43 +63,8 @@
   #include <pspaudio.h>
   #include <pspaudiolib.h>
   #include <psprtc.h>
-
-  #define convert_palette(value)                                              \
-    value = ((value & 0x7FE0) << 1) | (value & 0x1F)                          \
-
-  #define psp_file_open_read  PSP_O_RDONLY
-  #define psp_file_open_write (PSP_O_CREAT | PSP_O_WRONLY | PSP_O_TRUNC)
-
-  #define file_open(filename_tag, filename, mode)                             \
-    s32 filename_tag = sceIoOpen(filename, psp_file_open_##mode, 0777)        \
-
-  #define file_check_valid(filename_tag)                                      \
-    (filename_tag >= 0)                                                       \
-
-  #define file_close(filename_tag)                                            \
-    sceIoClose(filename_tag)                                                  \
-
-  #define file_read(filename_tag, buffer, size)                               \
-    sceIoRead(filename_tag, buffer, size)                                     \
-
-  #define file_write(filename_tag, buffer, size)                              \
-    sceIoWrite(filename_tag, buffer, size)                                    \
-
-  #define file_seek(filename_tag, offset, type)                               \
-    sceIoLseek(filename_tag, offset, PSP_##type)                              \
-
-  #define file_tag_type s32
-
   #include <time.h>
-  #include <stdio.h>
 #else
-
-#define GBA_SCREEN_WIDTH  (240)
-#define GBA_SCREEN_HEIGHT (160)
-#define GBA_SCREEN_PITCH  (240)
-
-void switch_to_main_thread(void);
-
   typedef unsigned char u8;
   typedef signed char s8;
   typedef unsigned short int u16;
@@ -104,52 +73,19 @@ void switch_to_main_thread(void);
   typedef signed int s32;
   typedef unsigned long long int u64;
   typedef signed long long int s64;
-
-  #define convert_palette(value)                                              \
-    value = ((value & 0x1F) << 11) | ((value & 0x03E0) << 1) | (value >> 10)  \
-
-  #define stdio_file_open_read  "rb"
-  #define stdio_file_open_write "wb"
-
-  #define file_open(filename_tag, filename, mode)                             \
-    FILE *filename_tag = fopen(filename, stdio_file_open_##mode)              \
-
-  #define file_check_valid(filename_tag)                                      \
-    (filename_tag)                                                            \
-
-  #define file_close(filename_tag)                                            \
-    fclose(filename_tag)                                                      \
-
-  #define file_read(filename_tag, buffer, size)                               \
-    fread(buffer, 1, size, filename_tag)                                      \
-
-  #define file_write(filename_tag, buffer, size)                              \
-    fwrite(buffer, 1, size, filename_tag)                                     \
-
-  #define file_seek(filename_tag, offset, type)                               \
-    fseek(filename_tag, offset, type)                                         \
-
-  #define file_tag_type FILE *
-
 #endif
 
-// These must be variables, not constants.
+#ifdef USE_BGR_FORMAT
+  #define convert_palette(value)  \
+    value = ((value & 0x7FE0) << 1) | (value & 0x1F)
+#else
+  #define convert_palette(value) \
+    value = ((value & 0x1F) << 11) | ((value & 0x03E0) << 1) | (value >> 10)
+#endif
 
-#define file_read_variable(filename_tag, variable)                            \
-  file_read(filename_tag, &variable, sizeof(variable))                        \
-
-#define file_write_variable(filename_tag, variable)                           \
-  file_write(filename_tag, &variable, sizeof(variable))                       \
-
-// These must be statically declared arrays (ie, global or on the stack,
-// not dynamically allocated on the heap)
-
-#define file_read_array(filename_tag, array)                                  \
-  file_read(filename_tag, array, sizeof(array))                               \
-
-#define file_write_array(filename_tag, array)                                 \
-  file_write(filename_tag, array, sizeof(array))                              \
-
+#define GBA_SCREEN_WIDTH  (240)
+#define GBA_SCREEN_HEIGHT (160)
+#define GBA_SCREEN_PITCH  (240)
 
 
 typedef u32 fixed16_16;
@@ -190,7 +126,6 @@ typedef u32 fixed8_24;
 
 #include <unistd.h>
 #include <time.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
